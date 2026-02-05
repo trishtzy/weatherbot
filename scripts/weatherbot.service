@@ -8,6 +8,7 @@ WorkingDirectory=/root/weatherbot
 ExecStart=/root/weatherbot/.venv/bin/python bot.py --interval 5
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=5
 EnvironmentFile=/root/weatherbot/.env
 
 [Install]
