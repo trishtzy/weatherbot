@@ -1,3 +1,4 @@
+import argparse
 import logging
 import os
 import sqlite3
@@ -374,21 +375,33 @@ async def send_scheduled_updates(app: Application):
 # Main
 # ---------------------------------------------------------------------------
 
-async def post_init(app: Application):
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        send_scheduled_updates,
-        trigger="interval",
-        hours=2,
-        args=[app],
-    )
-    scheduler.start()
+def make_post_init(interval_minutes: int):
+    async def post_init(app: Application):
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(
+            send_scheduled_updates,
+            trigger="interval",
+            minutes=interval_minutes,
+            args=[app],
+        )
+        scheduler.start()
+    return post_init
 
 
 def main():
+    parser = argparse.ArgumentParser(description="SG Weather Telegram Bot")
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=120,
+        metavar="MINUTES",
+        help="forecast update interval in minutes (default: 120)",
+    )
+    args = parser.parse_args()
+
     init_db()
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(make_post_init(args.interval)).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("areas", cmd_areas))
