@@ -18,7 +18,5 @@ systemctl daemon-reload
 systemctl enable weatherbot
 
 echo "Restarting bot..."
-systemctl stop weatherbot || true
-sleep 5
-systemctl start weatherbot
+systemctl restart weatherbot
 echo "Bot is running — check status with: systemctl status weatherbot"

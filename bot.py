@@ -377,6 +377,9 @@ async def send_scheduled_updates(app: Application):
 
 def make_post_init(interval_minutes: int):
     async def post_init(app: Application):
+        # Clear any stale polling session from a previous instance
+        await app.bot.get_updates(offset=-1, timeout=0)
+
         scheduler = AsyncIOScheduler()
         scheduler.add_job(
             send_scheduled_updates,
