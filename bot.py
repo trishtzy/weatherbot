@@ -241,16 +241,23 @@ def format_forecast_message(area: str, forecast: str, valid_period: str) -> str:
 # Bot command handlers
 # ---------------------------------------------------------------------------
 
+HELP_TEXT = (
+    "Commands:\n"
+    "/subscribe <area> - Get 2-hourly weather updates (multiple areas OK)\n"
+    "/unsubscribe <area> - Stop updates for an area\n"
+    "/weather - Current forecast for your subscribed areas\n"
+    "/areas - List all available areas\n"
+    "/help - Show this message\n\n"
+    "Example: /subscribe Bedok"
+)
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Hello! I'm the SG Weather Bot.\n\n"
-        "Commands:\n"
-        "/subscribe <area> - Get 2-hourly weather updates (multiple areas OK)\n"
-        "/unsubscribe <area> - Stop updates for an area\n"
-        "/weather - Current forecast for your subscribed areas\n"
-        "/areas - List all available areas\n\n"
-        "Example: /subscribe Bedok"
-    )
+    await update.message.reply_text("Hello! I'm the SG Weather Bot.\n\n" + HELP_TEXT)
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(HELP_TEXT)
 
 
 async def cmd_areas(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -418,6 +425,7 @@ def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(make_post_init(UPDATE_INTERVAL_MINUTES)).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("areas", cmd_areas))
     app.add_handler(CommandHandler("subscribe", cmd_subscribe))
     app.add_handler(CommandHandler("unsubscribe", cmd_unsubscribe))
