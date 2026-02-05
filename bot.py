@@ -295,17 +295,7 @@ async def send_scheduled_updates(app: Application):
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
-    init_db()
-
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("areas", cmd_areas))
-    app.add_handler(CommandHandler("subscribe", cmd_subscribe))
-    app.add_handler(CommandHandler("unsubscribe", cmd_unsubscribe))
-    app.add_handler(CommandHandler("weather", cmd_weather))
-
+async def post_init(app: Application):
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         send_scheduled_updates,
@@ -315,6 +305,18 @@ def main():
         next_run_time=None,  # first run after 2 hours, not immediately
     )
     scheduler.start()
+
+
+def main():
+    init_db()
+
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("areas", cmd_areas))
+    app.add_handler(CommandHandler("subscribe", cmd_subscribe))
+    app.add_handler(CommandHandler("unsubscribe", cmd_unsubscribe))
+    app.add_handler(CommandHandler("weather", cmd_weather))
 
     logger.info("Bot started")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
