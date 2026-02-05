@@ -1,6 +1,7 @@
 import logging
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -153,6 +154,25 @@ def get_all_area_names(data: dict) -> list[str]:
     return sorted(m["name"] for m in data.get("area_metadata", []))
 
 
+# Cache for area names (unlikely to change often)
+_area_names_cache: list[str] = []
+_area_names_cache_time: float = 0
+_AREA_NAMES_TTL = 86400  # 24 hours
+
+
+async def get_cached_area_names() -> list[str] | None:
+    """Return cached area names, refreshing from the API if stale."""
+    global _area_names_cache, _area_names_cache_time
+    if _area_names_cache and (time.monotonic() - _area_names_cache_time) < _AREA_NAMES_TTL:
+        return _area_names_cache
+    data = await fetch_forecast()
+    if data is None:
+        return _area_names_cache or None
+    _area_names_cache = get_all_area_names(data)
+    _area_names_cache_time = time.monotonic()
+    return _area_names_cache
+
+
 def format_forecast_message(area: str, forecast: str, valid_period: str) -> str:
     emoji = FORECAST_EMOJI.get(forecast, "")
     lines = [
@@ -181,11 +201,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_areas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = await fetch_forecast()
-    if data is None:
+    names = await get_cached_area_names()
+    if names is None:
         await update.message.reply_text("Sorry, could not fetch area list right now.")
         return
-    names = get_all_area_names(data)
     text = "Available areas:\n\n" + "\n".join(f"• {n}" for n in names)
     await update.message.reply_text(text)
 
@@ -201,14 +220,14 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     area_input = " ".join(context.args)
 
-    # Validate the area exists
-    data = await fetch_forecast()
-    if data is None:
+    # Validate the area exists using cached names
+    names = await get_cached_area_names()
+    if names is None:
         await update.message.reply_text("Sorry, could not reach the weather service right now. Try again later.")
         return
 
     # Case-insensitive match
-    valid_areas = {name.lower(): name for name in get_all_area_names(data)}
+    valid_areas = {name.lower(): name for name in names}
     matched_area = valid_areas.get(area_input.lower())
 
     if matched_area is None:
@@ -220,11 +239,14 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     add_subscriber(update.effective_chat.id, matched_area)
 
-    forecast = find_area_forecast(data, matched_area)
-    valid_period = get_valid_period_text(data)
+    # Fetch current forecast for the confirmation message
+    data = await fetch_forecast()
     reply = f"Subscribed to weather updates for *{matched_area}*! You'll receive forecasts every 2 hours."
-    if forecast:
-        reply += "\n\nCurrent forecast:\n" + format_forecast_message(matched_area, forecast, valid_period)
+    if data:
+        forecast = find_area_forecast(data, matched_area)
+        valid_period = get_valid_period_text(data)
+        if forecast:
+            reply += "\n\nCurrent forecast:\n" + format_forecast_message(matched_area, forecast, valid_period)
 
     await update.message.reply_text(reply, parse_mode="Markdown")
 
