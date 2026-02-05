@@ -1,0 +1,324 @@
+import logging
+import os
+import sqlite3
+from datetime import datetime, timezone
+
+import httpx
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from dotenv import load_dotenv
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+)
+
+load_dotenv()
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+DGS_API_KEY = os.environ.get("DGS_API_KEY", "")
+
+WEATHER_API_URL = "https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast"
+
+DB_PATH = "subscribers.db"
+
+FORECAST_EMOJI = {
+    "Fair": "☀️",
+    "Fair (Day)": "☀️",
+    "Fair (Night)": "🌙",
+    "Fair and Warm": "🌤️",
+    "Partly Cloudy": "⛅",
+    "Partly Cloudy (Day)": "⛅",
+    "Partly Cloudy (Night)": "☁️",
+    "Cloudy": "☁️",
+    "Hazy": "🌫️",
+    "Slightly Hazy": "🌫️",
+    "Windy": "💨",
+    "Mist": "🌫️",
+    "Fog": "🌫️",
+    "Light Rain": "🌦️",
+    "Moderate Rain": "🌧️",
+    "Heavy Rain": "🌧️",
+    "Passing Showers": "🌦️",
+    "Light Showers": "🌦️",
+    "Showers": "🌧️",
+    "Heavy Showers": "🌧️",
+    "Thundery Showers": "⛈️",
+    "Heavy Thundery Showers": "⛈️",
+    "Heavy Thundery Showers with Gusty Winds": "🌪️",
+}
+
+
+# ---------------------------------------------------------------------------
+# Database helpers
+# ---------------------------------------------------------------------------
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subscribers (
+            chat_id INTEGER PRIMARY KEY,
+            area TEXT NOT NULL,
+            subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def add_subscriber(chat_id: int, area: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT OR REPLACE INTO subscribers (chat_id, area) VALUES (?, ?)",
+        (chat_id, area),
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_subscriber(chat_id: int) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("DELETE FROM subscribers WHERE chat_id = ?", (chat_id,))
+    conn.commit()
+    deleted = cursor.rowcount > 0
+    conn.close()
+    return deleted
+
+
+def get_subscriber(chat_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT chat_id, area FROM subscribers WHERE chat_id = ?", (chat_id,)
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def get_all_subscribers():
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT chat_id, area FROM subscribers").fetchall()
+    conn.close()
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Weather API
+# ---------------------------------------------------------------------------
+
+async def fetch_forecast() -> dict | None:
+    headers = {}
+    if DGS_API_KEY:
+        headers["x-api-key"] = DGS_API_KEY
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(WEATHER_API_URL, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+    if data.get("code") != 0:
+        logger.error("Weather API error: %s", data.get("errorMsg"))
+        return None
+    return data.get("data")
+
+
+def find_area_forecast(data: dict, area: str) -> str | None:
+    items = data.get("items", [])
+    if not items:
+        return None
+    latest = items[-1]
+    for fc in latest.get("forecasts", []):
+        if fc["area"].lower() == area.lower():
+            return fc["forecast"]
+    return None
+
+
+def get_valid_period_text(data: dict) -> str:
+    items = data.get("items", [])
+    if not items:
+        return ""
+    latest = items[-1]
+    vp = latest.get("valid_period", {})
+    return vp.get("text", "")
+
+
+def get_all_area_names(data: dict) -> list[str]:
+    return sorted(m["name"] for m in data.get("area_metadata", []))
+
+
+def format_forecast_message(area: str, forecast: str, valid_period: str) -> str:
+    emoji = FORECAST_EMOJI.get(forecast, "")
+    lines = [
+        f"{emoji} *{area}*",
+        f"Forecast: *{forecast}*",
+    ]
+    if valid_period:
+        lines.append(f"Valid: {valid_period}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Bot command handlers
+# ---------------------------------------------------------------------------
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Hello! I'm the SG Weather Bot.\n\n"
+        "Commands:\n"
+        "/subscribe <area> - Get 2-hourly weather updates\n"
+        "/unsubscribe - Stop updates\n"
+        "/weather - Current forecast for your area\n"
+        "/areas - List all available areas\n\n"
+        "Example: /subscribe Bedok"
+    )
+
+
+async def cmd_areas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = await fetch_forecast()
+    if data is None:
+        await update.message.reply_text("Sorry, could not fetch area list right now.")
+        return
+    names = get_all_area_names(data)
+    text = "Available areas:\n\n" + "\n".join(f"• {n}" for n in names)
+    await update.message.reply_text(text)
+
+
+async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Please provide an area name.\n"
+            "Example: /subscribe Bedok\n\n"
+            "Use /areas to see the full list."
+        )
+        return
+
+    area_input = " ".join(context.args)
+
+    # Validate the area exists
+    data = await fetch_forecast()
+    if data is None:
+        await update.message.reply_text("Sorry, could not reach the weather service right now. Try again later.")
+        return
+
+    # Case-insensitive match
+    valid_areas = {name.lower(): name for name in get_all_area_names(data)}
+    matched_area = valid_areas.get(area_input.lower())
+
+    if matched_area is None:
+        await update.message.reply_text(
+            f"Area \"{area_input}\" not found.\n"
+            "Use /areas to see available areas."
+        )
+        return
+
+    add_subscriber(update.effective_chat.id, matched_area)
+
+    forecast = find_area_forecast(data, matched_area)
+    valid_period = get_valid_period_text(data)
+    reply = f"Subscribed to weather updates for *{matched_area}*! You'll receive forecasts every 2 hours."
+    if forecast:
+        reply += "\n\nCurrent forecast:\n" + format_forecast_message(matched_area, forecast, valid_period)
+
+    await update.message.reply_text(reply, parse_mode="Markdown")
+
+
+async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    removed = remove_subscriber(update.effective_chat.id)
+    if removed:
+        await update.message.reply_text("You've been unsubscribed. No more weather updates.")
+    else:
+        await update.message.reply_text("You weren't subscribed.")
+
+
+async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sub = get_subscriber(update.effective_chat.id)
+    if sub is None:
+        await update.message.reply_text(
+            "You're not subscribed yet.\n"
+            "Use /subscribe <area> to get started."
+        )
+        return
+
+    _, area = sub
+    data = await fetch_forecast()
+    if data is None:
+        await update.message.reply_text("Sorry, could not fetch the forecast right now.")
+        return
+
+    forecast = find_area_forecast(data, area)
+    if forecast is None:
+        await update.message.reply_text(f"No forecast data available for {area} right now.")
+        return
+
+    valid_period = get_valid_period_text(data)
+    await update.message.reply_text(
+        format_forecast_message(area, forecast, valid_period),
+        parse_mode="Markdown",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scheduled job: push forecasts to all subscribers
+# ---------------------------------------------------------------------------
+
+async def send_scheduled_updates(app: Application):
+    subscribers = get_all_subscribers()
+    if not subscribers:
+        return
+
+    data = await fetch_forecast()
+    if data is None:
+        logger.warning("Scheduled update: could not fetch forecast")
+        return
+
+    valid_period = get_valid_period_text(data)
+
+    for chat_id, area in subscribers:
+        forecast = find_area_forecast(data, area)
+        if forecast is None:
+            continue
+        text = format_forecast_message(area, forecast, valid_period)
+        try:
+            await app.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        except Exception:
+            logger.exception("Failed to send update to chat_id=%s", chat_id)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    init_db()
+
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("areas", cmd_areas))
+    app.add_handler(CommandHandler("subscribe", cmd_subscribe))
+    app.add_handler(CommandHandler("unsubscribe", cmd_unsubscribe))
+    app.add_handler(CommandHandler("weather", cmd_weather))
+
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        send_scheduled_updates,
+        trigger="interval",
+        hours=2,
+        args=[app],
+        next_run_time=None,  # first run after 2 hours, not immediately
+    )
+    scheduler.start()
+
+    logger.info("Bot started")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
