@@ -1,0 +1,14 @@
+[Unit]
+Description=Weather Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/weatherbot
+ExecStart=/root/weatherbot/.venv/bin/python bot.py
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/root/weatherbot/.env
+
+[Install]
+WantedBy=multi-user.target

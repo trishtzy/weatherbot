@@ -12,9 +12,11 @@ python3 -m venv .venv
 echo "Installing dependencies..."
 .venv/bin/pip install -r requirements.txt
 
-echo "Stopping existing bot if running..."
-pkill -f "\.venv/bin/python bot\.py" || true
+echo "Installing systemd service..."
+cp scripts/weatherbot.service /etc/systemd/system/weatherbot.service
+systemctl daemon-reload
+systemctl enable weatherbot
 
-echo "Starting bot in background..."
-nohup .venv/bin/python bot.py >> bot.log 2>&1 &
-echo "Bot started (PID: $!) — logs: bot.log"
+echo "Restarting bot..."
+systemctl restart weatherbot
+echo "Bot is running — check status with: systemctl status weatherbot"
