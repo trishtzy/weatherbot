@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/root/weatherbot
-ExecStart=/root/weatherbot/.venv/bin/python bot.py --interval 5
+ExecStart=/root/weatherbot/.venv/bin/python bot.py
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=5

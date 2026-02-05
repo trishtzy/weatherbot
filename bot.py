@@ -1,4 +1,3 @@
-import argparse
 import logging
 import os
 import sqlite3
@@ -25,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 DGS_API_KEY = os.environ.get("DGS_API_KEY", "")
+UPDATE_INTERVAL_MINUTES = int(os.environ.get("UPDATE_INTERVAL_MINUTES", "120"))
 
 WEATHER_API_URL = "https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast"
 
@@ -392,19 +392,9 @@ def make_post_init(interval_minutes: int):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SG Weather Telegram Bot")
-    parser.add_argument(
-        "--interval",
-        type=int,
-        default=120,
-        metavar="MINUTES",
-        help="forecast update interval in minutes (default: 120)",
-    )
-    args = parser.parse_args()
-
     init_db()
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(make_post_init(args.interval)).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(make_post_init(UPDATE_INTERVAL_MINUTES)).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("areas", cmd_areas))
