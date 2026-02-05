@@ -17,6 +17,10 @@ cp scripts/weatherbot.service /etc/systemd/system/weatherbot.service
 systemctl daemon-reload
 systemctl enable weatherbot
 
-echo "Restarting bot..."
-systemctl restart weatherbot
+echo "Stopping any running bot processes..."
+systemctl stop weatherbot || true
+pkill -f "python.*bot\.py" || true
+
+echo "Starting bot..."
+systemctl start weatherbot
 echo "Bot is running — check status with: systemctl status weatherbot"
