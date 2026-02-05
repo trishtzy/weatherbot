@@ -143,7 +143,27 @@ def get_all_subscribers():
 # Weather API
 # ---------------------------------------------------------------------------
 
+_forecast_cache: dict | None = None
+_forecast_cache_expiry: datetime | None = None
+
+
+def _get_forecast_expiry(data: dict) -> datetime | None:
+    """Extract the valid_period end time from forecast data."""
+    items = data.get("items", [])
+    if not items:
+        return None
+    end = items[-1].get("valid_period", {}).get("end")
+    if end:
+        return datetime.fromisoformat(end)
+    return None
+
+
 async def fetch_forecast() -> dict | None:
+    """Fetch the 2-hour forecast, returning a cached response if still fresh."""
+    global _forecast_cache, _forecast_cache_expiry
+    if _forecast_cache and _forecast_cache_expiry and datetime.now(timezone.utc) < _forecast_cache_expiry:
+        return _forecast_cache
+
     headers = {}
     if DGS_API_KEY:
         headers["x-api-key"] = DGS_API_KEY
@@ -156,7 +176,11 @@ async def fetch_forecast() -> dict | None:
     if data.get("code") != 0:
         logger.error("Weather API error: %s", data.get("errorMsg"))
         return None
-    return data.get("data")
+
+    result = data.get("data")
+    _forecast_cache = result
+    _forecast_cache_expiry = _get_forecast_expiry(result) if result else None
+    return _forecast_cache
 
 
 def find_area_forecast(data: dict, area: str) -> str | None:
