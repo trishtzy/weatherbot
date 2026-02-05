@@ -62,45 +62,73 @@ FORECAST_EMOJI = {
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS subscribers (
-            chat_id INTEGER PRIMARY KEY,
-            area TEXT NOT NULL,
-            subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    # Migrate from old single-area schema if needed
+    cursor = conn.execute("PRAGMA table_info(subscribers)")
+    columns = {row[1]: row[5] for row in cursor.fetchall()}  # name -> pk flag
+    if columns and columns.get("chat_id") and not columns.get("area", 0):
+        # Old schema: chat_id is sole PK. Recreate with composite key.
+        conn.executescript(
+            """
+            ALTER TABLE subscribers RENAME TO _subscribers_old;
+            CREATE TABLE subscribers (
+                chat_id INTEGER NOT NULL,
+                area TEXT NOT NULL,
+                subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (chat_id, area)
+            );
+            INSERT OR IGNORE INTO subscribers (chat_id, area, subscribed_at)
+                SELECT chat_id, area, subscribed_at FROM _subscribers_old;
+            DROP TABLE _subscribers_old;
+            """
         )
-        """
-    )
+    else:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscribers (
+                chat_id INTEGER NOT NULL,
+                area TEXT NOT NULL,
+                subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (chat_id, area)
+            )
+            """
+        )
     conn.commit()
     conn.close()
 
 
-def add_subscriber(chat_id: int, area: str):
+def add_subscriber(chat_id: int, area: str) -> bool:
+    """Add a subscription. Returns True if a new row was inserted, False if already existed."""
     conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT OR REPLACE INTO subscribers (chat_id, area) VALUES (?, ?)",
+    cursor = conn.execute(
+        "INSERT OR IGNORE INTO subscribers (chat_id, area) VALUES (?, ?)",
         (chat_id, area),
     )
     conn.commit()
+    inserted = cursor.rowcount > 0
     conn.close()
+    return inserted
 
 
-def remove_subscriber(chat_id: int) -> bool:
+def remove_subscriber(chat_id: int, area: str) -> bool:
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute("DELETE FROM subscribers WHERE chat_id = ?", (chat_id,))
+    cursor = conn.execute(
+        "DELETE FROM subscribers WHERE chat_id = ? AND area = ?",
+        (chat_id, area),
+    )
     conn.commit()
     deleted = cursor.rowcount > 0
     conn.close()
     return deleted
 
 
-def get_subscriber(chat_id: int):
+def get_subscriptions(chat_id: int) -> list[str]:
+    """Return all subscribed area names for a chat."""
     conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        "SELECT chat_id, area FROM subscribers WHERE chat_id = ?", (chat_id,)
-    ).fetchone()
+    rows = conn.execute(
+        "SELECT area FROM subscribers WHERE chat_id = ? ORDER BY area", (chat_id,)
+    ).fetchall()
     conn.close()
-    return row
+    return [r[0] for r in rows]
 
 
 def get_all_subscribers():
@@ -192,9 +220,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Hello! I'm the SG Weather Bot.\n\n"
         "Commands:\n"
-        "/subscribe <area> - Get 2-hourly weather updates\n"
-        "/unsubscribe - Stop updates\n"
-        "/weather - Current forecast for your area\n"
+        "/subscribe <area> - Get 2-hourly weather updates (multiple areas OK)\n"
+        "/unsubscribe <area> - Stop updates for an area\n"
+        "/weather - Current forecast for your subscribed areas\n"
         "/areas - List all available areas\n\n"
         "Example: /subscribe Bedok"
     )
@@ -237,7 +265,11 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    add_subscriber(update.effective_chat.id, matched_area)
+    inserted = add_subscriber(update.effective_chat.id, matched_area)
+
+    if not inserted:
+        await update.message.reply_text(f"You're already subscribed to *{matched_area}*.", parse_mode="Markdown")
+        return
 
     # Fetch current forecast for the confirmation message
     data = await fetch_forecast()
@@ -252,38 +284,63 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    removed = remove_subscriber(update.effective_chat.id)
-    if removed:
-        await update.message.reply_text("You've been unsubscribed. No more weather updates.")
-    else:
-        await update.message.reply_text("You weren't subscribed.")
+    if not context.args:
+        areas = get_subscriptions(update.effective_chat.id)
+        if not areas:
+            await update.message.reply_text("You have no active subscriptions.")
+        else:
+            listing = "\n".join(f"• {a}" for a in areas)
+            await update.message.reply_text(
+                "Please specify an area to unsubscribe from.\n"
+                f"Example: /unsubscribe {areas[0]}\n\n"
+                f"Your subscriptions:\n{listing}"
+            )
+        return
+
+    area_input = " ".join(context.args)
+
+    # Case-insensitive match against user's own subscriptions
+    areas = get_subscriptions(update.effective_chat.id)
+    sub_map = {a.lower(): a for a in areas}
+    matched_area = sub_map.get(area_input.lower())
+
+    if matched_area is None:
+        await update.message.reply_text(
+            f"You're not subscribed to \"{area_input}\".\n"
+            "Use /unsubscribe with no arguments to see your subscriptions."
+        )
+        return
+
+    remove_subscriber(update.effective_chat.id, matched_area)
+    await update.message.reply_text(f"Unsubscribed from *{matched_area}*.", parse_mode="Markdown")
 
 
 async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sub = get_subscriber(update.effective_chat.id)
-    if sub is None:
+    areas = get_subscriptions(update.effective_chat.id)
+    if not areas:
         await update.message.reply_text(
             "You're not subscribed yet.\n"
             "Use /subscribe <area> to get started."
         )
         return
 
-    _, area = sub
     data = await fetch_forecast()
     if data is None:
         await update.message.reply_text("Sorry, could not fetch the forecast right now.")
         return
 
-    forecast = find_area_forecast(data, area)
-    if forecast is None:
-        await update.message.reply_text(f"No forecast data available for {area} right now.")
+    valid_period = get_valid_period_text(data)
+    messages = []
+    for area in areas:
+        forecast = find_area_forecast(data, area)
+        if forecast:
+            messages.append(format_forecast_message(area, forecast, valid_period))
+
+    if not messages:
+        await update.message.reply_text("No forecast data available for your areas right now.")
         return
 
-    valid_period = get_valid_period_text(data)
-    await update.message.reply_text(
-        format_forecast_message(area, forecast, valid_period),
-        parse_mode="Markdown",
-    )
+    await update.message.reply_text("\n\n".join(messages), parse_mode="Markdown")
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +381,6 @@ async def post_init(app: Application):
         trigger="interval",
         hours=2,
         args=[app],
-        next_run_time=None,  # first run after 2 hours, not immediately
     )
     scheduler.start()
 
