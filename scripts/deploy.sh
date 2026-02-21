@@ -4,13 +4,25 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "Pulling latest changes..."
+PREV_HEAD=$(git rev-parse HEAD)
 git pull
+NEW_HEAD=$(git rev-parse HEAD)
 
 echo "Setting up virtual environment..."
 python3 -m venv .venv
 
 echo "Installing dependencies..."
 .venv/bin/pip install -r requirements.txt
+
+# Build release notes from commits between previous and new HEAD
+if [ "$PREV_HEAD" != "$NEW_HEAD" ]; then
+    RELEASE_NOTES=$(git log --pretty=format:"• %s" "${PREV_HEAD}..${NEW_HEAD}")
+else
+    RELEASE_NOTES="• Maintenance update"
+fi
+
+echo "Sending release announcement to subscribers..."
+.venv/bin/python3 scripts/announce_release.py "$RELEASE_NOTES" || true
 
 echo "Installing systemd service..."
 cp scripts/weatherbot.service /etc/systemd/system/weatherbot.service
