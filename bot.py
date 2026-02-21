@@ -2,7 +2,7 @@ import logging
 import os
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -234,6 +234,33 @@ def get_valid_period_text(data: dict) -> str:
     latest = items[-1]
     vp = latest.get("valid_period", {})
     return vp.get("text", "")
+
+
+def get_validity_timestamps(data: dict) -> tuple[str | None, str | None]:
+    """Extract validity period start and end from forecast data in UTC ISO format."""
+    items = data.get("items", [])
+    if not items:
+        return None, None
+    latest = items[-1]
+    vp = latest.get("valid_period", {})
+    start_str = vp.get("start")
+    end_str = vp.get("end")
+    if start_str and end_str:
+        # Parse Singapore time and convert to UTC
+        start_dt = datetime.fromisoformat(start_str)
+        end_dt = datetime.fromisoformat(end_str)
+        # Convert to UTC (Singapore is UTC+8)
+        start_utc = start_dt.astimezone(timezone.utc)
+        end_utc = end_dt.astimezone(timezone.utc)
+        return start_utc.isoformat(), end_utc.isoformat()
+    return None, None
+
+
+def calculate_next_scheduled_time(validity_start_iso: str) -> str:
+    """Calculate next scheduled time (2 hours after validity start)."""
+    validity_start = datetime.fromisoformat(validity_start_iso)
+    next_scheduled = validity_start + timedelta(hours=2)
+    return next_scheduled.isoformat()
 
 
 def get_all_area_names(data: dict) -> list[str]:
