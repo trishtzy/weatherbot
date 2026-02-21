@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 DGS_API_KEY = os.environ.get("DGS_API_KEY", "")
-UPDATE_INTERVAL_MINUTES = int(os.environ.get("UPDATE_INTERVAL_MINUTES", "120"))
 
 WEATHER_API_URL = "https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast"
 
@@ -303,7 +302,7 @@ def format_forecast_message(area: str, forecast: str, valid_period: str) -> str:
 
 HELP_TEXT = (
     "Commands:\n"
-    "/subscribe <area> - Get 2-hourly weather updates (multiple areas OK)\n"
+    "/subscribe <area> - Get weather updates every 2 hours at :30 past the hour\n"
     "/unsubscribe <area> - Stop updates for an area\n"
     "/weather - Current forecast for your subscribed areas\n"
     "/areas - List all available areas\n"
@@ -451,25 +450,55 @@ async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Scheduled job: push forecasts to all subscribers
 # ---------------------------------------------------------------------------
 
-async def send_scheduled_updates(app: Application):
-    subscribers = get_all_subscribers()
-    if not subscribers:
-        return
-
+async def send_scheduled_updates(app: Application, startup: bool = False):
+    """Send forecasts to subscribers whose next_scheduled_at is due.
+    
+    Args:
+        app: The Telegram bot application
+        startup: If True, only send if current forecast is still valid
+    """
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    
+    # Get current forecast data
     data = await fetch_forecast()
     if data is None:
-        logger.warning("Scheduled update: could not fetch forecast")
+        if not startup:
+            logger.warning("Scheduled update: could not fetch forecast")
         return
-
+    
+    # Get validity period in UTC
+    validity_start, validity_end = get_validity_timestamps(data)
+    if not validity_start or not validity_end:
+        logger.warning("Scheduled update: could not extract validity period")
+        return
+    
+    # On startup, only send if current forecast is still valid (not expired)
+    if startup:
+        if now >= datetime.fromisoformat(validity_end):
+            logger.info("Startup: current forecast expired, waiting for next scheduled run")
+            return
+    
+    # Get subscribers who need an update
+    subscribers = get_overdue_subscribers(now_iso)
+    if not subscribers:
+        return
+    
     valid_period = get_valid_period_text(data)
-
+    next_scheduled = calculate_next_scheduled_time(validity_start)
+    
     for chat_id, area in subscribers:
         forecast = find_area_forecast(data, area)
         if forecast is None:
             continue
+        
         text = format_forecast_message(area, forecast, valid_period)
         try:
             await app.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+            # Update timestamps after successful send
+            update_subscriber_timestamps(chat_id, area, validity_start, next_scheduled)
+            logger.info("Sent forecast to chat_id=%s for area=%s, next scheduled: %s", 
+                        chat_id, area, next_scheduled)
         except Exception:
             logger.exception("Failed to send update to chat_id=%s", chat_id)
 
@@ -478,23 +507,29 @@ async def send_scheduled_updates(app: Application):
 # Main
 # ---------------------------------------------------------------------------
 
-def make_post_init(interval_minutes: int):
+def make_post_init():
     async def post_init(app: Application):
         scheduler = AsyncIOScheduler()
         scheduler.add_job(
             send_scheduled_updates,
             trigger="interval",
-            minutes=interval_minutes,
+            minutes=1,  # Check every minute for due subscribers
             args=[app],
+            id="forecast_scheduler",
+            replace_existing=True,
         )
         scheduler.start()
+        
+        # Check for overdue subscribers on startup
+        logger.info("Running startup check for overdue subscribers...")
+        await send_scheduled_updates(app, startup=True)
     return post_init
 
 
 def main():
     init_db()
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(make_post_init(UPDATE_INTERVAL_MINUTES)).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(make_post_init()).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
