@@ -61,13 +61,17 @@ FORECAST_EMOJI = {
 # Database helpers
 # ---------------------------------------------------------------------------
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
+MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "migrations")
+
+
+def _migrate_old_schema(conn):
+    """Handle migration from old single-area schema to new composite key schema."""
     cursor = conn.execute("PRAGMA table_info(subscribers)")
     columns = {row[1]: row[5] for row in cursor.fetchall()}
-
+    
     if columns and columns.get("chat_id") and not columns.get("area", 0):
-        # Old schema: chat_id is sole PK. Recreate with composite key and new columns.
+        # Old schema: chat_id is sole PK. Recreate with composite key.
+        logger.info("Migrating from old single-area schema to composite key schema")
         conn.executescript(
             """
             ALTER TABLE subscribers RENAME TO _subscribers_old;
@@ -82,30 +86,66 @@ def init_db():
             INSERT OR IGNORE INTO subscribers (chat_id, area, subscribed_at)
                 SELECT chat_id, area, subscribed_at FROM _subscribers_old;
             DROP TABLE _subscribers_old;
+            PRAGMA user_version=3;
             """
         )
-    else:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS subscribers (
-                chat_id INTEGER NOT NULL,
-                area TEXT NOT NULL,
-                subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_sent_at TIMESTAMP,
-                next_scheduled_at TIMESTAMP,
-                PRIMARY KEY (chat_id, area)
-            )
-            """
-        )
+        conn.commit()
+        logger.info("Old schema migration complete")
 
-    # Add new columns if table exists but columns are missing
-    if columns and "last_sent_at" not in columns:
-        conn.execute("ALTER TABLE subscribers ADD COLUMN last_sent_at TEXT")
-    if columns and "next_scheduled_at" not in columns:
-        conn.execute("ALTER TABLE subscribers ADD COLUMN next_scheduled_at TEXT")
 
-    conn.commit()
+def init_db():
+    """Initialize database by running pending migrations using PRAGMA user_version."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Handle old schema migration first (pre-migration system)
+    _migrate_old_schema(conn)
+    
+    # Get current database version
+    current_version, = cursor.execute("PRAGMA user_version").fetchone() or (0,)
+    
+    # Load and sort migration files
+    if not os.path.exists(MIGRATIONS_DIR):
+        logger.warning("Migrations directory not found: %s", MIGRATIONS_DIR)
+        conn.close()
+        return
+    
+    migration_files = sorted([f for f in os.listdir(MIGRATIONS_DIR) if f.endswith(".sql")])
+    
+    for migration_file in migration_files:
+        # Extract version number from filename (000N_*.sql)
+        try:
+            migration_version = int(migration_file.split("_")[0])
+        except (IndexError, ValueError):
+            logger.warning("Skipping invalid migration file: %s", migration_file)
+            continue
+        
+        # Skip if already applied
+        if migration_version <= current_version:
+            logger.debug("Migration %d already applied", migration_version)
+            continue
+        
+        # Skip the placeholder migration 0003 (handled by _migrate_old_schema)
+        if migration_file == "0003_migrate_old_schema.sql":
+            continue
+        
+        # Apply migration
+        migration_path = os.path.join(MIGRATIONS_DIR, migration_file)
+        with open(migration_path, "r") as f:
+            sql = f.read()
+        
+        try:
+            logger.info("Applying migration %d: %s", migration_version, migration_file)
+            cursor.executescript(sql)
+            conn.commit()
+            logger.info("Database now at version %d", migration_version)
+        except Exception as e:
+            logger.error("Failed to apply migration %d: %s", migration_version, e)
+            conn.rollback()
+            raise
+    
     conn.close()
+    logger.info("Database initialization complete")
 
 
 def add_subscriber(chat_id: int, area: str) -> bool:
