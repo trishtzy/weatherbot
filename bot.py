@@ -63,11 +63,11 @@ FORECAST_EMOJI = {
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
-    # Migrate from old single-area schema if needed
     cursor = conn.execute("PRAGMA table_info(subscribers)")
-    columns = {row[1]: row[5] for row in cursor.fetchall()}  # name -> pk flag
+    columns = {row[1]: row[5] for row in cursor.fetchall()}
+
     if columns and columns.get("chat_id") and not columns.get("area", 0):
-        # Old schema: chat_id is sole PK. Recreate with composite key.
+        # Old schema: chat_id is sole PK. Recreate with composite key and new columns.
         conn.executescript(
             """
             ALTER TABLE subscribers RENAME TO _subscribers_old;
@@ -75,6 +75,8 @@ def init_db():
                 chat_id INTEGER NOT NULL,
                 area TEXT NOT NULL,
                 subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_sent_at TEXT,
+                next_scheduled_at TEXT,
                 PRIMARY KEY (chat_id, area)
             );
             INSERT OR IGNORE INTO subscribers (chat_id, area, subscribed_at)
@@ -89,10 +91,19 @@ def init_db():
                 chat_id INTEGER NOT NULL,
                 area TEXT NOT NULL,
                 subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_sent_at TEXT,
+                next_scheduled_at TEXT,
                 PRIMARY KEY (chat_id, area)
             )
             """
         )
+
+    # Add new columns if table exists but columns are missing
+    if columns and "last_sent_at" not in columns:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN last_sent_at TEXT")
+    if columns and "next_scheduled_at" not in columns:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN next_scheduled_at TEXT")
+
     conn.commit()
     conn.close()
 
@@ -135,6 +146,28 @@ def get_subscriptions(chat_id: int) -> list[str]:
 def get_all_subscribers():
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute("SELECT chat_id, area FROM subscribers").fetchall()
+    conn.close()
+    return rows
+
+
+def update_subscriber_timestamps(chat_id: int, area: str, last_sent_at: str, next_scheduled_at: str):
+    """Update the last_sent_at and next_scheduled_at timestamps for a subscriber."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE subscribers SET last_sent_at = ?, next_scheduled_at = ? WHERE chat_id = ? AND area = ?",
+        (last_sent_at, next_scheduled_at, chat_id, area),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_overdue_subscribers(now_iso: str) -> list[tuple[int, str]]:
+    """Get subscribers whose next_scheduled_at is due (<= now)."""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT chat_id, area FROM subscribers WHERE next_scheduled_at IS NULL OR next_scheduled_at <= ?",
+        (now_iso,),
+    ).fetchall()
     conn.close()
     return rows
 
