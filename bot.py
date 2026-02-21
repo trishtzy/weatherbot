@@ -352,7 +352,7 @@ def format_forecast_message(area: str, forecast: str, valid_period: str) -> str:
 
 HELP_TEXT = (
     "Commands:\n"
-    "/subscribe <area> - Get weather updates every 2 hours at :30 past the hour\n"
+    "/subscribe <area> - Get 2-hourly weather updates (multiple areas OK)"
     "/unsubscribe <area> - Stop updates for an area\n"
     "/weather - Current forecast for your subscribed areas\n"
     "/areas - List all available areas\n"
@@ -408,11 +408,15 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     inserted = add_subscriber(update.effective_chat.id, matched_area)
 
+    if not inserted:
+        await update.message.reply_text(f"You're already subscribed to *{matched_area}*.", parse_mode="Markdown")
+        return
+
     # Fetch current forecast for the confirmation message
     data = await fetch_forecast()
     reply = f"Subscribed to weather updates for *{matched_area}*! You'll receive forecasts every 2 hours."
     
-    validity_start = None
+    now = datetime.now(timezone.utc)
     next_scheduled = None
     
     if data:
@@ -422,17 +426,13 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply += "\n\nCurrent forecast:\n" + format_forecast_message(matched_area, forecast, valid_period)
         
         # Calculate next scheduled time based on current time (not API validity)
-        now = datetime.now(timezone.utc)
         next_scheduled = calculate_next_scheduled_time(now)
     
     await update.message.reply_text(reply, parse_mode="Markdown")
     
-    # Update timestamps (even for resubscribes, so they get fresh schedule)
-    if validity_start and next_scheduled:
-        update_subscriber_timestamps(update.effective_chat.id, matched_area, validity_start, next_scheduled)
-    
-    if not inserted:
-        await update.message.reply_text(f"Note: You're already subscribed to *{matched_area}*. Updated your schedule.", parse_mode="Markdown")
+    # Update timestamps for the new subscriber
+    if next_scheduled:
+        update_subscriber_timestamps(update.effective_chat.id, matched_area, now.isoformat(), next_scheduled)
 
 
 async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
