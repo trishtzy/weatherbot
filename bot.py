@@ -3,6 +3,7 @@ import os
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -74,8 +75,8 @@ def init_db():
                 chat_id INTEGER NOT NULL,
                 area TEXT NOT NULL,
                 subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_sent_at TEXT,
-                next_scheduled_at TEXT,
+                last_sent_at TIMESTAMP,
+                next_scheduled_at TIMESTAMP,
                 PRIMARY KEY (chat_id, area)
             );
             INSERT OR IGNORE INTO subscribers (chat_id, area, subscribed_at)
@@ -90,8 +91,8 @@ def init_db():
                 chat_id INTEGER NOT NULL,
                 area TEXT NOT NULL,
                 subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_sent_at TEXT,
-                next_scheduled_at TEXT,
+                last_sent_at TIMESTAMP,
+                next_scheduled_at TIMESTAMP,
                 PRIMARY KEY (chat_id, area)
             )
             """
@@ -245,20 +246,29 @@ def get_validity_timestamps(data: dict) -> tuple[str | None, str | None]:
     start_str = vp.get("start")
     end_str = vp.get("end")
     if start_str and end_str:
-        # Parse Singapore time and convert to UTC
-        start_dt = datetime.fromisoformat(start_str)
-        end_dt = datetime.fromisoformat(end_str)
-        # Convert to UTC (Singapore is UTC+8)
+        # Parse with explicit Singapore timezone and convert to UTC
+        start_dt = datetime.fromisoformat(start_str).replace(tzinfo=ZoneInfo("Asia/Singapore"))
+        end_dt = datetime.fromisoformat(end_str).replace(tzinfo=ZoneInfo("Asia/Singapore"))
         start_utc = start_dt.astimezone(timezone.utc)
         end_utc = end_dt.astimezone(timezone.utc)
         return start_utc.isoformat(), end_utc.isoformat()
     return None, None
 
 
-def calculate_next_scheduled_time(validity_start_iso: str) -> str:
-    """Calculate next scheduled time (2 hours after validity start)."""
-    validity_start = datetime.fromisoformat(validity_start_iso)
-    next_scheduled = validity_start + timedelta(hours=2)
+def calculate_next_scheduled_time(current_time: datetime) -> str:
+    """Calculate next scheduled time.
+    
+    Rounds current time down to nearest :30 and adds 2 hours.
+    This creates validity windows like 12:30am-2:30am, 2:30am-4:30am, etc.
+    """
+    # Round down to nearest :30
+    if current_time.minute >= 30:
+        rounded = current_time.replace(minute=30, second=0, microsecond=0)
+    else:
+        rounded = current_time.replace(minute=0, second=0, microsecond=0) - timedelta(minutes=30)
+    
+    # Add 2 hours to get to the start of the next window
+    next_scheduled = rounded + timedelta(hours=2)
     return next_scheduled.isoformat()
 
 
@@ -371,10 +381,9 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if forecast:
             reply += "\n\nCurrent forecast:\n" + format_forecast_message(matched_area, forecast, valid_period)
         
-        # Get validity timestamps for scheduling
-        validity_start, validity_end = get_validity_timestamps(data)
-        if validity_start:
-            next_scheduled = calculate_next_scheduled_time(validity_start)
+        # Calculate next scheduled time based on current time (not API validity)
+        now = datetime.now(timezone.utc)
+        next_scheduled = calculate_next_scheduled_time(now)
     
     await update.message.reply_text(reply, parse_mode="Markdown")
     
@@ -485,7 +494,7 @@ async def send_scheduled_updates(app: Application, startup: bool = False):
         return
     
     valid_period = get_valid_period_text(data)
-    next_scheduled = calculate_next_scheduled_time(validity_start)
+    next_scheduled = calculate_next_scheduled_time(now)
     
     for chat_id, area in subscribers:
         forecast = find_area_forecast(data, area)
