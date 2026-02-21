@@ -3,7 +3,6 @@ import os
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -118,6 +117,8 @@ def init_db():
             logger.info("Database now at version %d", migration_version)
         except Exception as e:
             logger.error("Failed to apply migration %d: %s", migration_version, e)
+            # executescript() commits implicitly, so rollback has no effect here.
+            # The raise below ensures the error is surfaced to the caller.
             conn.rollback()
             raise
     
@@ -263,11 +264,10 @@ def get_validity_timestamps(data: dict) -> tuple[str | None, str | None]:
     start_str = vp.get("start")
     end_str = vp.get("end")
     if start_str and end_str:
-        # Parse with explicit Singapore timezone and convert to UTC
-        start_dt = datetime.fromisoformat(start_str).replace(tzinfo=ZoneInfo("Asia/Singapore"))
-        end_dt = datetime.fromisoformat(end_str).replace(tzinfo=ZoneInfo("Asia/Singapore"))
-        start_utc = start_dt.astimezone(timezone.utc)
-        end_utc = end_dt.astimezone(timezone.utc)
+        # astimezone handles both offset-aware and naive strings correctly,
+        # without clobbering any timezone already embedded in the ISO string.
+        start_utc = datetime.fromisoformat(start_str).astimezone(timezone.utc)
+        end_utc = datetime.fromisoformat(end_str).astimezone(timezone.utc)
         return start_utc.isoformat(), end_utc.isoformat()
     return None, None
 
@@ -282,7 +282,7 @@ def calculate_next_scheduled_time(current_time: datetime) -> str:
     if current_time.minute >= 30:
         rounded = current_time.replace(minute=30, second=0, microsecond=0)
     else:
-        rounded = current_time.replace(minute=0, second=0, microsecond=0) - timedelta(minutes=30)
+        rounded = current_time.replace(minute=0, second=0, microsecond=0)
     
     # Add 2 hours to get to the start of the next window
     next_scheduled = rounded + timedelta(hours=2)
@@ -394,22 +394,18 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = f"Subscribed to weather updates for *{matched_area}*! You'll receive forecasts every 2 hours."
     
     now = datetime.now(timezone.utc)
-    next_scheduled = None
-    
+    # Calculate next scheduled time unconditionally - it only depends on now, not the API
+    next_scheduled = calculate_next_scheduled_time(now)
+
     if data:
         forecast = find_area_forecast(data, matched_area)
         valid_period = get_valid_period_text(data)
         if forecast:
             reply += "\n\nCurrent forecast:\n" + format_forecast_message(matched_area, forecast, valid_period)
-        
-        # Calculate next scheduled time based on current time (not API validity)
-        next_scheduled = calculate_next_scheduled_time(now)
-    
+
     await update.message.reply_text(reply, parse_mode="Markdown")
-    
-    # Update timestamps for the new subscriber
-    if next_scheduled:
-        update_subscriber_timestamps(update.effective_chat.id, matched_area, now.isoformat(), next_scheduled)
+
+    update_subscriber_timestamps(update.effective_chat.id, matched_area, now.isoformat(), next_scheduled)
 
 
 async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
