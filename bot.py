@@ -64,54 +64,35 @@ FORECAST_EMOJI = {
 MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "migrations")
 
 
-def _migrate_old_schema(conn):
-    """Handle migration from old single-area schema to new composite key schema."""
-    cursor = conn.execute("PRAGMA table_info(subscribers)")
-    columns = {row[1]: row[5] for row in cursor.fetchall()}
-    
-    if columns and columns.get("chat_id") and not columns.get("area", 0):
-        # Old schema: chat_id is sole PK. Recreate with composite key.
-        logger.info("Migrating from old single-area schema to composite key schema")
-        conn.executescript(
-            """
-            ALTER TABLE subscribers RENAME TO _subscribers_old;
-            CREATE TABLE subscribers (
-                chat_id INTEGER NOT NULL,
-                area TEXT NOT NULL,
-                subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_sent_at TIMESTAMP,
-                next_scheduled_at TIMESTAMP,
-                PRIMARY KEY (chat_id, area)
-            );
-            INSERT OR IGNORE INTO subscribers (chat_id, area, subscribed_at)
-                SELECT chat_id, area, subscribed_at FROM _subscribers_old;
-            DROP TABLE _subscribers_old;
-            PRAGMA user_version=3;
-            """
-        )
-        conn.commit()
-        logger.info("Old schema migration complete")
-
-
 def init_db():
     """Initialize database by running pending migrations using PRAGMA user_version."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
-    # Handle old schema migration first (pre-migration system)
-    _migrate_old_schema(conn)
-    
+
     # Get current database version
     current_version, = cursor.execute("PRAGMA user_version").fetchone() or (0,)
-    
+
+    # If the subscribers table already exists but user_version is 0,
+    # the initial schema (0001) was applied before the migration system existed.
+    # Stamp it at version 1 so it won't be re-applied.
+    if current_version == 0:
+        table_exists = cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='subscribers'"
+        ).fetchone()
+        if table_exists:
+            cursor.execute("PRAGMA user_version=1")
+            conn.commit()
+            current_version = 1
+            logger.info("Existing database detected, stamped at version 1")
+
     # Load and sort migration files
     if not os.path.exists(MIGRATIONS_DIR):
         logger.warning("Migrations directory not found: %s", MIGRATIONS_DIR)
         conn.close()
         return
-    
+
     migration_files = sorted([f for f in os.listdir(MIGRATIONS_DIR) if f.endswith(".sql")])
-    
+
     for migration_file in migration_files:
         # Extract version number from filename (000N_*.sql)
         try:
@@ -119,16 +100,12 @@ def init_db():
         except (IndexError, ValueError):
             logger.warning("Skipping invalid migration file: %s", migration_file)
             continue
-        
+
         # Skip if already applied
         if migration_version <= current_version:
             logger.debug("Migration %d already applied", migration_version)
             continue
-        
-        # Skip the placeholder migration 0003 (handled by _migrate_old_schema)
-        if migration_file == "0003_migrate_old_schema.sql":
-            continue
-        
+
         # Apply migration
         migration_path = os.path.join(MIGRATIONS_DIR, migration_file)
         with open(migration_path, "r") as f:
@@ -352,7 +329,7 @@ def format_forecast_message(area: str, forecast: str, valid_period: str) -> str:
 
 HELP_TEXT = (
     "Commands:\n"
-    "/subscribe <area> - Get 2-hourly weather updates (multiple areas OK)"
+    "/subscribe <area> - Get 2-hourly weather updates (multiple areas OK)\n"
     "/unsubscribe <area> - Stop updates for an area\n"
     "/weather - Current forecast for your subscribed areas\n"
     "/areas - List all available areas\n"
