@@ -18,7 +18,7 @@ echo "Installing dependencies..."
 if [ "$PREV_HEAD" != "$NEW_HEAD" ]; then
     RELEASE_NOTES=$(git log --pretty=format:"• %s" "${PREV_HEAD}..${NEW_HEAD}")
 else
-    RELEASE_NOTES="• Maintenance update"
+    RELEASE_NOTES=""
 fi
 
 echo "Sending release announcement to subscribers..."
