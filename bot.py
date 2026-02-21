@@ -359,20 +359,32 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     inserted = add_subscriber(update.effective_chat.id, matched_area)
 
-    if not inserted:
-        await update.message.reply_text(f"You're already subscribed to *{matched_area}*.", parse_mode="Markdown")
-        return
-
     # Fetch current forecast for the confirmation message
     data = await fetch_forecast()
     reply = f"Subscribed to weather updates for *{matched_area}*! You'll receive forecasts every 2 hours."
+    
+    validity_start = None
+    next_scheduled = None
+    
     if data:
         forecast = find_area_forecast(data, matched_area)
         valid_period = get_valid_period_text(data)
         if forecast:
             reply += "\n\nCurrent forecast:\n" + format_forecast_message(matched_area, forecast, valid_period)
-
+        
+        # Get validity timestamps for scheduling
+        validity_start, validity_end = get_validity_timestamps(data)
+        if validity_start:
+            next_scheduled = calculate_next_scheduled_time(validity_start)
+    
     await update.message.reply_text(reply, parse_mode="Markdown")
+    
+    # Update timestamps (even for resubscribes, so they get fresh schedule)
+    if validity_start and next_scheduled:
+        update_subscriber_timestamps(update.effective_chat.id, matched_area, validity_start, next_scheduled)
+    
+    if not inserted:
+        await update.message.reply_text(f"Note: You're already subscribed to *{matched_area}*. Updated your schedule.", parse_mode="Markdown")
 
 
 async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
