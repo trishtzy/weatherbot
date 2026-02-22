@@ -438,27 +438,44 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     inserted = add_subscriber(update.effective_chat.id, matched_area)
 
-    if not inserted:
+    if inserted is None:
+        await update.message.reply_text("Sorry, the subscriber limit has been reached.")
+        return
+
+    if inserted is False:
         await update.message.reply_text(f"You're already subscribed to *{matched_area}*.", parse_mode="Markdown")
         return
 
-    # Fetch current forecast for the confirmation message
+    # Fetch current forecast for all subscribed areas (not just the newly added one)
     data = await fetch_forecast()
-    reply = f"Subscribed to weather updates for *{matched_area}*! You'll receive forecasts every 2 hours."
-    
+    all_areas = get_subscriptions(update.effective_chat.id)
+    reply = f"Subscribed to *{matched_area}*! You'll receive forecasts every 2 hours."
+
     now = datetime.now(timezone.utc)
     # Calculate next scheduled time unconditionally - it only depends on now, not the API
     next_scheduled = calculate_next_scheduled_time(now)
 
     if data:
-        forecast = find_area_forecast(data, matched_area)
         valid_period = get_valid_period_text(data)
-        if forecast:
-            reply += "\n\nCurrent forecast:\n" + format_forecast_message(matched_area, forecast, valid_period)
+        forecasts = []
+        for area in all_areas:
+            forecast = find_area_forecast(data, area)
+            if forecast:
+                forecasts.append(format_forecast_message(area, forecast, valid_period))
+        if forecasts:
+            reply += "\n\nCurrent forecast:\n" + "\n\n".join(forecasts)
 
     await update.message.reply_text(reply, parse_mode="Markdown")
 
-    update_subscriber_timestamps(update.effective_chat.id, matched_area, now.isoformat(), next_scheduled)
+    # Only set timestamps for new subscribers; existing subscribers keep their schedule
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT next_scheduled_at FROM subscribers WHERE chat_id = ?",
+        (update.effective_chat.id,)
+    ).fetchone()
+    conn.close()
+    if row and row[0] is None:
+        update_subscriber_timestamps(update.effective_chat.id, now.isoformat(), next_scheduled)
 
 
 async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
