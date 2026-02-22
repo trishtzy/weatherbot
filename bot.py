@@ -275,6 +275,38 @@ def get_trivia_count() -> int:
     return count
 
 
+def get_all_trivia_ids() -> list[int]:
+    """Get all trivia IDs in ascending order."""
+    conn = get_db_connection()
+    rows = conn.execute("SELECT id FROM trivia ORDER BY id").fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+
+def get_next_trivia_id(last_id: int | None) -> int | None:
+    """Get the next trivia ID after last_id, wrapping around if needed.
+
+    Handles non-contiguous IDs by finding the next ID greater than last_id,
+    or wrapping to the first ID if at the end.
+
+    Returns None if no trivia exists.
+    """
+    trivia_ids = get_all_trivia_ids()
+    if not trivia_ids:
+        return None
+
+    if last_id is None:
+        return trivia_ids[0]
+
+    # Find the next ID after last_id
+    for tid in trivia_ids:
+        if tid > last_id:
+            return tid
+
+    # Wrap around to the first ID
+    return trivia_ids[0]
+
+
 def get_trivia_subscription(chat_id: int) -> dict | None:
     """Get trivia subscription status for a chat."""
     conn = get_db_connection()
@@ -651,17 +683,16 @@ async def cmd_trivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Get next trivia to send immediately
         subscription = get_trivia_subscription(chat_id)
         last_id = subscription["last_sent_trivia_id"] if subscription else None
-        trivia_count = get_trivia_count()
-        
-        if trivia_count == 0:
+
+        # Get next trivia ID (handles non-contiguous IDs)
+        next_id = get_next_trivia_id(last_id)
+        if next_id is None:
             await update.message.reply_text(
                 "Weekly trivia enabled. You'll receive trivia every Friday at 10am.\n\n"
                 "Note: No trivia available yet."
             )
             return
-        
-        # Calculate next trivia ID (sequential, wrap around after max)
-        next_id = 1 if last_id is None else (last_id % trivia_count) + 1
+
         trivia = get_trivia_by_id(next_id)
         
         if trivia:
@@ -685,17 +716,20 @@ async def send_weekly_trivia(app: Application):
     if not subscribers:
         logger.info("No subscribers with trivia enabled")
         return
-    
-    trivia_count = get_trivia_count()
-    if trivia_count == 0:
+
+    # Pre-fetch trivia IDs once (handles non-contiguous IDs)
+    trivia_ids = get_all_trivia_ids()
+    if not trivia_ids:
         logger.warning("No trivia available to send")
         return
-    
+
     for chat_id, last_id in subscribers:
-        # Calculate next trivia ID (sequential, wrap around after max)
-        next_id = 1 if last_id is None else (last_id % trivia_count) + 1
+        # Get next trivia ID (handles non-contiguous IDs)
+        next_id = get_next_trivia_id(last_id)
+        if next_id is None:
+            continue
+
         trivia = get_trivia_by_id(next_id)
-        
         if trivia:
             message = f"Trivia of the week:\n\n{trivia['text']}\n\nSource: {trivia['source_url']}"
             try:
