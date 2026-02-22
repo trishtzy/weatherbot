@@ -507,7 +507,11 @@ async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     remove_subscriber(update.effective_chat.id, matched_area)
-    await update.message.reply_text(f"Unsubscribed from *{matched_area}*.", parse_mode="Markdown")
+    remaining = get_subscriptions(update.effective_chat.id)
+    reply = f"Unsubscribed from *{matched_area}*."
+    if not remaining:
+        reply += " You have no more active subscriptions."
+    await update.message.reply_text(reply, parse_mode="Markdown")
 
 
 async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
