@@ -61,11 +61,9 @@ async def main(version: str, release_notes: str):
         print("No subscribers found, skipping announcement.")
         return
 
-    message = "*Scheduled maintenance in progress*\n\nThe bot will be briefly unavailable while a new release is deployed."
+    message = f"@sgforecastbot has been updated to version *{version}*"
     if release_notes:
-        message += f"\n\n*Changes in this release:*\n{release_notes}"
-    if version:
-        message += f"\n\nVersion: {version}"
+        message += f"\n\n*Changes:*\n{release_notes}"
 
     print(f"Sending release announcement to {len(chat_ids)} subscriber(s)...")
     async with httpx.AsyncClient() as client:
