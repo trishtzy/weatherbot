@@ -487,6 +487,21 @@ async def get_cached_area_names() -> list[str] | None:
     return _area_names_cache
 
 
+def escape_markdown(text: str) -> str:
+    """Escape Markdown special characters for Telegram's Markdown V1 parser."""
+    # Telegram Markdown V1 special characters: * _ ` [
+    escape_chars = ['*', '_', '`', '[']
+    for char in escape_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+
+def format_trivia_message(trivia: dict) -> str:
+    """Format a trivia item for display with proper Markdown escaping."""
+    escaped_text = escape_markdown(trivia['text'])
+    return f"Trivia of the week:\n\n{escaped_text}\n\nSource: {trivia['source_url']}"
+
+
 def format_forecast_message(area: str, forecast: str, valid_period: str) -> str:
     emoji = FORECAST_EMOJI.get(forecast, "")
     lines = [
@@ -694,10 +709,9 @@ async def cmd_trivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         trivia = get_trivia_by_id(next_id)
-        
+
         if trivia:
-            message = f"Trivia of the week:\n\n{trivia['text']}\n\nSource: {trivia['source_url']}"
-            await update.message.reply_text(message, parse_mode="Markdown")
+            await update.message.reply_text(format_trivia_message(trivia), parse_mode="Markdown")
             update_last_sent_trivia(chat_id, next_id)
         else:
             await update.message.reply_text("Weekly trivia enabled. You'll receive trivia every Friday at 10am.")
@@ -731,9 +745,8 @@ async def send_weekly_trivia(app: Application):
 
         trivia = get_trivia_by_id(next_id)
         if trivia:
-            message = f"Trivia of the week:\n\n{trivia['text']}\n\nSource: {trivia['source_url']}"
             try:
-                await app.bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
+                await app.bot.send_message(chat_id=chat_id, text=format_trivia_message(trivia), parse_mode="Markdown")
                 update_last_sent_trivia(chat_id, next_id)
                 logger.info("Sent trivia id=%d to chat_id=%s", next_id, chat_id)
             except Exception:
