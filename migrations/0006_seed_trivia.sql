@@ -1,10 +1,7 @@
--- Migration 0010: Replace trivia with higher quality, standalone facts
--- Each fact should be surprising, educational, and self-contained
+-- Migration 0006: Seed trivia table with quality facts
+-- Source: https://www.weather.gov.sg/forecasting-2/
+-- Each fact is standalone, educational, and self-contained
 
--- Delete all existing trivia
-DELETE FROM trivia;
-
--- Insert new high-quality trivia
 INSERT INTO trivia (id, text, source_url) VALUES
 (1, 'For global weather forecasts, Numerical Weather Prediction (NWP) models divide the atmosphere into blocks that are 20 km across and a few hundred metres high. For local forecasts in Singapore, these blocks shrink to just 2 km across for greater precision.', 'https://www.weather.gov.sg/forecasting-2/'),
 
@@ -36,4 +33,4 @@ INSERT INTO trivia (id, text, source_url) VALUES
 
 (15, 'To create a weather forecast, meteorologists need a three-dimensional picture of the atmosphere, with charts prepared for the surface and multiple upper levels showing temperature, wind, pressure, and humidity at each height.', 'https://www.weather.gov.sg/forecasting-2/');
 
-PRAGMA user_version=10;
+PRAGMA user_version=6;
