@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sqlite3
@@ -126,68 +127,120 @@ def init_db():
     logger.info("Database initialization complete")
 
 
-def add_subscriber(chat_id: int, area: str) -> bool:
-    """Add a subscription. Returns True if a new row was inserted, False if already existed."""
+SUBSCRIBER_LIMIT = 100
+
+
+def add_subscriber(chat_id: int, area: str) -> bool | None:
+    """Add an area to a subscriber's list.
+
+    Returns:
+        True  - area successfully added (new user or new area)
+        False - area already in subscriber's list
+        None  - subscriber limit reached (chat_id is not yet in DB)
+    """
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute(
-        "INSERT OR IGNORE INTO subscribers (chat_id, area) VALUES (?, ?)",
-        (chat_id, area),
+    row = conn.execute(
+        "SELECT areas FROM subscribers WHERE chat_id = ?", (chat_id,)
+    ).fetchone()
+
+    if row is None:
+        # New user: check global limit first
+        count = conn.execute("SELECT COUNT(*) FROM subscribers").fetchone()[0]
+        if count >= SUBSCRIBER_LIMIT:
+            conn.close()
+            return None
+        conn.execute(
+            "INSERT INTO subscribers (chat_id, areas) VALUES (?, ?)",
+            (chat_id, json.dumps([area])),
+        )
+        conn.commit()
+        conn.close()
+        return True
+
+    # Existing user: append area if not already present
+    areas = json.loads(row[0])
+    if area in areas:
+        conn.close()
+        return False
+    areas.append(area)
+    conn.execute(
+        "UPDATE subscribers SET areas = ? WHERE chat_id = ?",
+        (json.dumps(sorted(areas)), chat_id),
     )
     conn.commit()
-    inserted = cursor.rowcount > 0
     conn.close()
-    return inserted
+    return True
 
 
 def remove_subscriber(chat_id: int, area: str) -> bool:
+    """Remove an area from a subscriber's list. Deletes the row if no areas remain.
+
+    Returns True if the area was found and removed, False otherwise.
+    """
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute(
-        "DELETE FROM subscribers WHERE chat_id = ? AND area = ?",
-        (chat_id, area),
-    )
+    row = conn.execute(
+        "SELECT areas FROM subscribers WHERE chat_id = ?", (chat_id,)
+    ).fetchone()
+
+    if row is None:
+        conn.close()
+        return False
+
+    areas = json.loads(row[0])
+    if area not in areas:
+        conn.close()
+        return False
+
+    areas.remove(area)
+    if not areas:
+        conn.execute("DELETE FROM subscribers WHERE chat_id = ?", (chat_id,))
+    else:
+        conn.execute(
+            "UPDATE subscribers SET areas = ? WHERE chat_id = ?",
+            (json.dumps(areas), chat_id),
+        )
     conn.commit()
-    deleted = cursor.rowcount > 0
     conn.close()
-    return deleted
+    return True
 
 
 def get_subscriptions(chat_id: int) -> list[str]:
     """Return all subscribed area names for a chat."""
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute(
-        "SELECT area FROM subscribers WHERE chat_id = ? ORDER BY area", (chat_id,)
-    ).fetchall()
+    row = conn.execute(
+        "SELECT areas FROM subscribers WHERE chat_id = ?", (chat_id,)
+    ).fetchone()
     conn.close()
-    return [r[0] for r in rows]
+    return json.loads(row[0]) if row else []
 
 
-def get_all_subscribers():
+def get_all_subscribers() -> list[tuple[int, list[str]]]:
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT chat_id, area FROM subscribers").fetchall()
+    rows = conn.execute("SELECT chat_id, areas FROM subscribers").fetchall()
     conn.close()
-    return rows
+    return [(chat_id, json.loads(areas)) for chat_id, areas in rows]
 
 
-def update_subscriber_timestamps(chat_id: int, area: str, last_sent_at: str, next_scheduled_at: str):
+def update_subscriber_timestamps(chat_id: int, last_sent_at: str, next_scheduled_at: str):
     """Update the last_sent_at and next_scheduled_at timestamps for a subscriber."""
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
-        "UPDATE subscribers SET last_sent_at = ?, next_scheduled_at = ? WHERE chat_id = ? AND area = ?",
-        (last_sent_at, next_scheduled_at, chat_id, area),
+        "UPDATE subscribers SET last_sent_at = ?, next_scheduled_at = ? WHERE chat_id = ?",
+        (last_sent_at, next_scheduled_at, chat_id),
     )
     conn.commit()
     conn.close()
 
 
-def get_overdue_subscribers(now_iso: str) -> list[tuple[int, str]]:
+def get_overdue_subscribers(now_iso: str) -> list[tuple[int, list[str]]]:
     """Get subscribers whose next_scheduled_at is due (<= now)."""
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
-        "SELECT chat_id, area FROM subscribers WHERE next_scheduled_at IS NULL OR next_scheduled_at <= ?",
+        "SELECT chat_id, areas FROM subscribers WHERE next_scheduled_at IS NULL OR next_scheduled_at <= ?",
         (now_iso,),
     ).fetchall()
     conn.close()
-    return rows
+    return [(chat_id, json.loads(areas)) for chat_id, areas in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -385,27 +438,44 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     inserted = add_subscriber(update.effective_chat.id, matched_area)
 
-    if not inserted:
+    if inserted is None:
+        await update.message.reply_text("Sorry, the subscriber limit has been reached.")
+        return
+
+    if inserted is False:
         await update.message.reply_text(f"You're already subscribed to *{matched_area}*.", parse_mode="Markdown")
         return
 
-    # Fetch current forecast for the confirmation message
+    # Fetch current forecast for all subscribed areas (not just the newly added one)
     data = await fetch_forecast()
-    reply = f"Subscribed to weather updates for *{matched_area}*! You'll receive forecasts every 2 hours."
-    
+    all_areas = get_subscriptions(update.effective_chat.id)
+    reply = f"Subscribed to *{matched_area}*! You'll receive forecasts every 2 hours."
+
     now = datetime.now(timezone.utc)
     # Calculate next scheduled time unconditionally - it only depends on now, not the API
     next_scheduled = calculate_next_scheduled_time(now)
 
     if data:
-        forecast = find_area_forecast(data, matched_area)
         valid_period = get_valid_period_text(data)
-        if forecast:
-            reply += "\n\nCurrent forecast:\n" + format_forecast_message(matched_area, forecast, valid_period)
+        forecasts = []
+        for area in all_areas:
+            forecast = find_area_forecast(data, area)
+            if forecast:
+                forecasts.append(format_forecast_message(area, forecast, valid_period))
+        if forecasts:
+            reply += "\n\nCurrent forecast:\n" + "\n\n".join(forecasts)
 
     await update.message.reply_text(reply, parse_mode="Markdown")
 
-    update_subscriber_timestamps(update.effective_chat.id, matched_area, now.isoformat(), next_scheduled)
+    # Only set timestamps for new subscribers; existing subscribers keep their schedule
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT next_scheduled_at FROM subscribers WHERE chat_id = ?",
+        (update.effective_chat.id,)
+    ).fetchone()
+    conn.close()
+    if row and row[0] is None:
+        update_subscriber_timestamps(update.effective_chat.id, now.isoformat(), next_scheduled)
 
 
 async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -437,7 +507,11 @@ async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     remove_subscriber(update.effective_chat.id, matched_area)
-    await update.message.reply_text(f"Unsubscribed from *{matched_area}*.", parse_mode="Markdown")
+    remaining = get_subscriptions(update.effective_chat.id)
+    reply = f"Unsubscribed from *{matched_area}*."
+    if not remaining:
+        reply += " You have no more active subscriptions."
+    await update.message.reply_text(reply, parse_mode="Markdown")
 
 
 async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -509,18 +583,23 @@ async def send_scheduled_updates(app: Application, startup: bool = False):
     valid_period = get_valid_period_text(data)
     next_scheduled = calculate_next_scheduled_time(now)
     
-    for chat_id, area in subscribers:
-        forecast = find_area_forecast(data, area)
-        if forecast is None:
+    for chat_id, areas in subscribers:
+        messages = []
+        for area in areas:
+            forecast = find_area_forecast(data, area)
+            if forecast:
+                messages.append(format_forecast_message(area, forecast, valid_period))
+
+        if not messages:
             continue
-        
-        text = format_forecast_message(area, forecast, valid_period)
+
+        text = "\n\n".join(messages)
         try:
             await app.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
             # Update timestamps after successful send
-            update_subscriber_timestamps(chat_id, area, validity_start, next_scheduled)
-            logger.info("Sent forecast to chat_id=%s for area=%s, next scheduled: %s", 
-                        chat_id, area, next_scheduled)
+            update_subscriber_timestamps(chat_id, validity_start, next_scheduled)
+            logger.info("Sent forecast to chat_id=%s areas=%s, next scheduled: %s",
+                        chat_id, areas, next_scheduled)
         except Exception:
             logger.exception("Failed to send update to chat_id=%s", chat_id)
 
