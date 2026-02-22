@@ -30,6 +30,13 @@ WEATHER_API_URL = "https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast
 
 DB_PATH = "subscribers.db"
 
+
+def get_db_connection() -> sqlite3.Connection:
+    """Get a database connection with foreign keys enabled."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
 FORECAST_EMOJI = {
     "Fair": "☀️",
     "Fair (Day)": "☀️",
@@ -66,7 +73,7 @@ MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "migrations")
 
 def init_db():
     """Initialize database by running pending migrations using PRAGMA user_version."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     # Get current database version
@@ -138,7 +145,7 @@ def add_subscriber(chat_id: int, area: str) -> bool | None:
         False - area already in subscriber's list
         None  - subscriber limit reached (chat_id is not yet in DB)
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     row = conn.execute(
         "SELECT areas FROM subscribers WHERE chat_id = ?", (chat_id,)
     ).fetchone()
@@ -177,7 +184,7 @@ def remove_subscriber(chat_id: int, area: str) -> bool:
 
     Returns True if the area was found and removed, False otherwise.
     """
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     row = conn.execute(
         "SELECT areas FROM subscribers WHERE chat_id = ?", (chat_id,)
     ).fetchone()
@@ -206,7 +213,7 @@ def remove_subscriber(chat_id: int, area: str) -> bool:
 
 def get_subscriptions(chat_id: int) -> list[str]:
     """Return all subscribed area names for a chat."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     row = conn.execute(
         "SELECT areas FROM subscribers WHERE chat_id = ?", (chat_id,)
     ).fetchone()
@@ -215,7 +222,7 @@ def get_subscriptions(chat_id: int) -> list[str]:
 
 
 def get_all_subscribers() -> list[tuple[int, list[str]]]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     rows = conn.execute("SELECT chat_id, areas FROM subscribers").fetchall()
     conn.close()
     return [(chat_id, json.loads(areas)) for chat_id, areas in rows]
@@ -223,7 +230,7 @@ def get_all_subscribers() -> list[tuple[int, list[str]]]:
 
 def update_subscriber_timestamps(chat_id: int, last_sent_at: str, next_scheduled_at: str):
     """Update the last_sent_at and next_scheduled_at timestamps for a subscriber."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.execute(
         "UPDATE subscribers SET last_sent_at = ?, next_scheduled_at = ? WHERE chat_id = ?",
         (last_sent_at, next_scheduled_at, chat_id),
@@ -234,7 +241,7 @@ def update_subscriber_timestamps(chat_id: int, last_sent_at: str, next_scheduled
 
 def get_overdue_subscribers(now_iso: str) -> list[tuple[int, list[str]]]:
     """Get subscribers whose next_scheduled_at is due (<= now)."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     rows = conn.execute(
         "SELECT chat_id, areas FROM subscribers WHERE next_scheduled_at IS NULL OR next_scheduled_at <= ?",
         (now_iso,),
@@ -249,7 +256,7 @@ def get_overdue_subscribers(now_iso: str) -> list[tuple[int, list[str]]]:
 
 def get_trivia_by_id(trivia_id: int) -> dict | None:
     """Get a trivia item by ID."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     row = conn.execute(
         "SELECT id, text, source_url FROM trivia WHERE id = ?",
         (trivia_id,)
@@ -262,7 +269,7 @@ def get_trivia_by_id(trivia_id: int) -> dict | None:
 
 def get_trivia_count() -> int:
     """Get the total count of trivia items."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     count = conn.execute("SELECT COUNT(*) FROM trivia").fetchone()[0]
     conn.close()
     return count
@@ -270,7 +277,7 @@ def get_trivia_count() -> int:
 
 def get_trivia_subscription(chat_id: int) -> dict | None:
     """Get trivia subscription status for a chat."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     row = conn.execute(
         "SELECT trivia_enabled, last_sent_trivia_id FROM trivia_subscriptions WHERE chat_id = ?",
         (chat_id,)
@@ -283,7 +290,7 @@ def get_trivia_subscription(chat_id: int) -> dict | None:
 
 def set_trivia_enabled(chat_id: int, enabled: bool) -> bool:
     """Enable or disable trivia for a chat. Returns True if successful."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     # Check if subscription exists
     existing = conn.execute(
         "SELECT 1 FROM trivia_subscriptions WHERE chat_id = ?",
@@ -307,7 +314,7 @@ def set_trivia_enabled(chat_id: int, enabled: bool) -> bool:
 
 def update_last_sent_trivia(chat_id: int, trivia_id: int) -> None:
     """Update the last sent trivia ID for a chat."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     conn.execute(
         "UPDATE trivia_subscriptions SET last_sent_trivia_id = ? WHERE chat_id = ?",
         (trivia_id, chat_id)
@@ -318,7 +325,7 @@ def update_last_sent_trivia(chat_id: int, trivia_id: int) -> None:
 
 def get_trivia_enabled_subscribers() -> list[tuple[int, int | None]]:
     """Get all subscribers with trivia enabled and their last sent trivia ID."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     rows = conn.execute(
         "SELECT chat_id, last_sent_trivia_id FROM trivia_subscriptions WHERE trivia_enabled = 1"
     ).fetchall()
@@ -552,7 +559,7 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply, parse_mode="Markdown")
 
     # Only set timestamps for new subscribers; existing subscribers keep their schedule
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     row = conn.execute(
         "SELECT next_scheduled_at FROM subscribers WHERE chat_id = ?",
         (update.effective_chat.id,)
