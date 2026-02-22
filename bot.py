@@ -583,18 +583,23 @@ async def send_scheduled_updates(app: Application, startup: bool = False):
     valid_period = get_valid_period_text(data)
     next_scheduled = calculate_next_scheduled_time(now)
     
-    for chat_id, area in subscribers:
-        forecast = find_area_forecast(data, area)
-        if forecast is None:
+    for chat_id, areas in subscribers:
+        messages = []
+        for area in areas:
+            forecast = find_area_forecast(data, area)
+            if forecast:
+                messages.append(format_forecast_message(area, forecast, valid_period))
+
+        if not messages:
             continue
-        
-        text = format_forecast_message(area, forecast, valid_period)
+
+        text = "\n\n".join(messages)
         try:
             await app.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
             # Update timestamps after successful send
-            update_subscriber_timestamps(chat_id, area, validity_start, next_scheduled)
-            logger.info("Sent forecast to chat_id=%s for area=%s, next scheduled: %s", 
-                        chat_id, area, next_scheduled)
+            update_subscriber_timestamps(chat_id, validity_start, next_scheduled)
+            logger.info("Sent forecast to chat_id=%s areas=%s, next scheduled: %s",
+                        chat_id, areas, next_scheduled)
         except Exception:
             logger.exception("Failed to send update to chat_id=%s", chat_id)
 
