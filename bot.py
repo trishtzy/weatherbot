@@ -244,6 +244,89 @@ def get_overdue_subscribers(now_iso: str) -> list[tuple[int, list[str]]]:
 
 
 # ---------------------------------------------------------------------------
+# Trivia Database Helpers
+# ---------------------------------------------------------------------------
+
+def get_trivia_by_id(trivia_id: int) -> dict | None:
+    """Get a trivia item by ID."""
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT id, text, source_url FROM trivia WHERE id = ?",
+        (trivia_id,)
+    ).fetchone()
+    conn.close()
+    if row:
+        return {"id": row[0], "text": row[1], "source_url": row[2]}
+    return None
+
+
+def get_trivia_count() -> int:
+    """Get the total count of trivia items."""
+    conn = sqlite3.connect(DB_PATH)
+    count = conn.execute("SELECT COUNT(*) FROM trivia").fetchone()[0]
+    conn.close()
+    return count
+
+
+def get_trivia_subscription(chat_id: int) -> dict | None:
+    """Get trivia subscription status for a chat."""
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT trivia_enabled, last_sent_trivia_id FROM trivia_subscriptions WHERE chat_id = ?",
+        (chat_id,)
+    ).fetchone()
+    conn.close()
+    if row:
+        return {"trivia_enabled": bool(row[0]), "last_sent_trivia_id": row[1]}
+    return None
+
+
+def set_trivia_enabled(chat_id: int, enabled: bool) -> bool:
+    """Enable or disable trivia for a chat. Returns True if successful."""
+    conn = sqlite3.connect(DB_PATH)
+    # Check if subscription exists
+    existing = conn.execute(
+        "SELECT 1 FROM trivia_subscriptions WHERE chat_id = ?",
+        (chat_id,)
+    ).fetchone()
+    
+    if existing:
+        conn.execute(
+            "UPDATE trivia_subscriptions SET trivia_enabled = ? WHERE chat_id = ?",
+            (1 if enabled else 0, chat_id)
+        )
+    else:
+        conn.execute(
+            "INSERT INTO trivia_subscriptions (chat_id, trivia_enabled, last_sent_trivia_id) VALUES (?, ?, ?)",
+            (chat_id, 1 if enabled else 0, None)
+        )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def update_last_sent_trivia(chat_id: int, trivia_id: int) -> None:
+    """Update the last sent trivia ID for a chat."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE trivia_subscriptions SET last_sent_trivia_id = ? WHERE chat_id = ?",
+        (trivia_id, chat_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_trivia_enabled_subscribers() -> list[tuple[int, int | None]]:
+    """Get all subscribers with trivia enabled and their last sent trivia ID."""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT chat_id, last_sent_trivia_id FROM trivia_subscriptions WHERE trivia_enabled = 1"
+    ).fetchall()
+    conn.close()
+    return [(chat_id, last_id) for chat_id, last_id in rows]
+
+
+# ---------------------------------------------------------------------------
 # Weather API
 # ---------------------------------------------------------------------------
 
@@ -386,6 +469,7 @@ HELP_TEXT = (
     "/unsubscribe <area> - Stop updates for an area\n"
     "/weather - Current forecast for your subscribed areas\n"
     "/areas - List all available areas\n"
+    "/trivia on|off - Enable/disable weekly weather trivia (default: off)\n"
     "/help - Show this message\n\n"
     "Example: /subscribe Bedok"
 )
@@ -542,6 +626,79 @@ async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n\n".join(messages), parse_mode="Markdown")
 
 
+async def cmd_trivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Enable or disable weekly trivia. Usage: /trivia on|off"""
+    if not context.args or context.args[0].lower() not in ["on", "off"]:
+        await update.message.reply_text(
+            "Usage: /trivia on - Enable weekly trivia\n"
+            "       /trivia off - Disable weekly trivia"
+        )
+        return
+    
+    action = context.args[0].lower()
+    chat_id = update.effective_chat.id
+    
+    if action == "on":
+        set_trivia_enabled(chat_id, True)
+        
+        # Get next trivia to send immediately
+        subscription = get_trivia_subscription(chat_id)
+        last_id = subscription["last_sent_trivia_id"] if subscription else None
+        trivia_count = get_trivia_count()
+        
+        if trivia_count == 0:
+            await update.message.reply_text(
+                "Weekly trivia enabled. You'll receive trivia every Friday at 10am.\n\n"
+                "Note: No trivia available yet."
+            )
+            return
+        
+        # Calculate next trivia ID (sequential, wrap around after max)
+        next_id = 1 if last_id is None else (last_id % trivia_count) + 1
+        trivia = get_trivia_by_id(next_id)
+        
+        if trivia:
+            message = f"Trivia of the week:\n\n{trivia['text']}\n\nSource: {trivia['source_url']}"
+            await update.message.reply_text(message, parse_mode="Markdown")
+            update_last_sent_trivia(chat_id, next_id)
+        else:
+            await update.message.reply_text("Weekly trivia enabled. You'll receive trivia every Friday at 10am.")
+    else:
+        set_trivia_enabled(chat_id, False)
+        await update.message.reply_text("Weekly trivia disabled.")
+
+
+# ---------------------------------------------------------------------------
+# Scheduled job: push trivia to enabled subscribers
+# ---------------------------------------------------------------------------
+
+async def send_weekly_trivia(app: Application):
+    """Send trivia to all subscribers who have trivia enabled."""
+    subscribers = get_trivia_enabled_subscribers()
+    if not subscribers:
+        logger.info("No subscribers with trivia enabled")
+        return
+    
+    trivia_count = get_trivia_count()
+    if trivia_count == 0:
+        logger.warning("No trivia available to send")
+        return
+    
+    for chat_id, last_id in subscribers:
+        # Calculate next trivia ID (sequential, wrap around after max)
+        next_id = 1 if last_id is None else (last_id % trivia_count) + 1
+        trivia = get_trivia_by_id(next_id)
+        
+        if trivia:
+            message = f"Trivia of the week:\n\n{trivia['text']}\n\nSource: {trivia['source_url']}"
+            try:
+                await app.bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
+                update_last_sent_trivia(chat_id, next_id)
+                logger.info("Sent trivia id=%d to chat_id=%s", next_id, chat_id)
+            except Exception:
+                logger.exception("Failed to send trivia to chat_id=%s", chat_id)
+
+
 # ---------------------------------------------------------------------------
 # Scheduled job: push forecasts to all subscribers
 # ---------------------------------------------------------------------------
@@ -619,6 +776,17 @@ def make_post_init():
             id="forecast_scheduler",
             replace_existing=True,
         )
+        # Schedule weekly trivia for Friday at 10:00 AM SGT (02:00 UTC)
+        scheduler.add_job(
+            send_weekly_trivia,
+            trigger="cron",
+            day_of_week="fri",
+            hour=2,  # 02:00 UTC = 10:00 SGT
+            minute=0,
+            args=[app],
+            id="trivia_scheduler",
+            replace_existing=True,
+        )
         scheduler.start()
         
         # Check for overdue subscribers on startup
@@ -638,6 +806,7 @@ def main():
     app.add_handler(CommandHandler("subscribe", cmd_subscribe))
     app.add_handler(CommandHandler("unsubscribe", cmd_unsubscribe))
     app.add_handler(CommandHandler("weather", cmd_weather))
+    app.add_handler(CommandHandler("trivia", cmd_trivia))
 
     logger.info("Bot started")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
