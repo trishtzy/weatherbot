@@ -249,17 +249,7 @@ def get_overdue_subscribers(now_iso: str) -> list[tuple[int, list[str]]]:
 
 _forecast_cache: dict | None = None
 _forecast_cache_expiry: datetime | None = None
-
-
-def _get_forecast_expiry(data: dict) -> datetime | None:
-    """Extract the valid_period end time from forecast data."""
-    items = data.get("items", [])
-    if not items:
-        return None
-    end = items[-1].get("valid_period", {}).get("end")
-    if end:
-        return datetime.fromisoformat(end)
-    return None
+_FORECAST_CACHE_TTL_SECONDS = 1800  # 30 minutes
 
 
 async def fetch_forecast() -> dict | None:
@@ -283,7 +273,7 @@ async def fetch_forecast() -> dict | None:
 
     result = data.get("data")
     _forecast_cache = result
-    _forecast_cache_expiry = _get_forecast_expiry(result) if result else None
+    _forecast_cache_expiry = datetime.now(timezone.utc) + timedelta(seconds=_FORECAST_CACHE_TTL_SECONDS) if result else None
     return _forecast_cache
 
 
