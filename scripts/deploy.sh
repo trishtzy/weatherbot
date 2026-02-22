@@ -24,6 +24,12 @@ fi
 # Get the version tag being deployed (from main after pull)
 VERSION_TAG=$(git describe --tags main 2>/dev/null || echo "")
 
+# Abort deployment if no version tag is found
+if [ -z "$VERSION_TAG" ]; then
+    echo "Error: No version tag found on main branch. Deployment aborted."
+    exit 1
+fi
+
 echo "Installing systemd service..."
 cp scripts/weatherbot.service /etc/systemd/system/weatherbot.service
 systemctl daemon-reload
