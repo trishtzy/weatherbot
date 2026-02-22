@@ -51,7 +51,7 @@ async def send_announcement(chat_id: int, message: str, client: httpx.AsyncClien
         print(f"  Failed to send to chat_id={chat_id}: {e}")
 
 
-async def main(release_notes: str):
+async def main(version: str, release_notes: str):
     if not TELEGRAM_BOT_TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN not set.")
         sys.exit(1)
@@ -64,6 +64,8 @@ async def main(release_notes: str):
     message = "*Scheduled maintenance in progress*\n\nThe bot will be briefly unavailable while a new release is deployed."
     if release_notes:
         message += f"\n\n*Changes in this release:*\n{release_notes}"
+    if version:
+        message += f"\n\nVersion: {version}"
 
     print(f"Sending release announcement to {len(chat_ids)} subscriber(s)...")
     async with httpx.AsyncClient() as client:
@@ -74,8 +76,9 @@ async def main(release_notes: str):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: announce_release.py <release-notes>")
+        print("Usage: announce_release.py <version> <release-notes>")
         sys.exit(1)
 
-    release_notes = sys.argv[1]
-    asyncio.run(main(release_notes))
+    version = sys.argv[1]
+    release_notes = sys.argv[2] if len(sys.argv) > 2 else ""
+    asyncio.run(main(version, release_notes))

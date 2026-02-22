@@ -21,8 +21,11 @@ else
     RELEASE_NOTES=""
 fi
 
+# Get the version tag being deployed (from main after pull)
+VERSION_TAG=$(git describe --tags main 2>/dev/null || echo "")
+
 echo "Sending release announcement to subscribers..."
-.venv/bin/python3 scripts/announce_release.py "$RELEASE_NOTES" || true
+.venv/bin/python3 scripts/announce_release.py "$VERSION_TAG" "$RELEASE_NOTES" || true
 
 echo "Installing systemd service..."
 cp scripts/weatherbot.service /etc/systemd/system/weatherbot.service
