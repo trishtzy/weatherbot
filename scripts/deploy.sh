@@ -14,13 +14,6 @@ python3 -m venv .venv
 echo "Installing dependencies..."
 .venv/bin/pip install -r requirements.txt
 
-# Build release notes from commits between previous and new HEAD
-if [ "$PREV_HEAD" != "$NEW_HEAD" ]; then
-    RELEASE_NOTES=$(git log --pretty=format:"• %s" "${PREV_HEAD}..${NEW_HEAD}")
-else
-    RELEASE_NOTES=""
-fi
-
 # Get the version tag being deployed (from main after pull)
 VERSION_TAG=$(git describe --tags main 2>/dev/null || echo "")
 
@@ -28,6 +21,17 @@ VERSION_TAG=$(git describe --tags main 2>/dev/null || echo "")
 if [ -z "$VERSION_TAG" ]; then
     echo "Error: No version tag found on main branch. Deployment aborted."
     exit 1
+fi
+
+# Get the previous version tag (the one before VERSION_TAG chronologically)
+PREV_TAG=$(git tag --sort=-v:refname | grep -A1 "^${VERSION_TAG}$" | tail -1 || echo "")
+
+# Build release notes between previous version and current version
+if [ -n "$PREV_TAG" ]; then
+    RELEASE_NOTES=$(git log --pretty=format:"• %s" "${PREV_TAG}..${VERSION_TAG}")
+else
+    # No previous tag found (first release), show all commits in this tag
+    RELEASE_NOTES=$(git log --pretty=format:"• %s" "${VERSION_TAG}")
 fi
 
 echo "Installing systemd service..."
