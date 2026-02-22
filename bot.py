@@ -130,68 +130,117 @@ def init_db():
 SUBSCRIBER_LIMIT = 100
 
 
-def add_subscriber(chat_id: int, area: str) -> bool:
-    """Add a subscription. Returns True if a new row was inserted, False if already existed."""
+def add_subscriber(chat_id: int, area: str) -> bool | None:
+    """Add an area to a subscriber's list.
+
+    Returns:
+        True  - area successfully added (new user or new area)
+        False - area already in subscriber's list
+        None  - subscriber limit reached (chat_id is not yet in DB)
+    """
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute(
-        "INSERT OR IGNORE INTO subscribers (chat_id, area) VALUES (?, ?)",
-        (chat_id, area),
+    row = conn.execute(
+        "SELECT areas FROM subscribers WHERE chat_id = ?", (chat_id,)
+    ).fetchone()
+
+    if row is None:
+        # New user: check global limit first
+        count = conn.execute("SELECT COUNT(*) FROM subscribers").fetchone()[0]
+        if count >= SUBSCRIBER_LIMIT:
+            conn.close()
+            return None
+        conn.execute(
+            "INSERT INTO subscribers (chat_id, areas) VALUES (?, ?)",
+            (chat_id, json.dumps([area])),
+        )
+        conn.commit()
+        conn.close()
+        return True
+
+    # Existing user: append area if not already present
+    areas = json.loads(row[0])
+    if area in areas:
+        conn.close()
+        return False
+    areas.append(area)
+    conn.execute(
+        "UPDATE subscribers SET areas = ? WHERE chat_id = ?",
+        (json.dumps(sorted(areas)), chat_id),
     )
     conn.commit()
-    inserted = cursor.rowcount > 0
     conn.close()
-    return inserted
+    return True
 
 
 def remove_subscriber(chat_id: int, area: str) -> bool:
+    """Remove an area from a subscriber's list. Deletes the row if no areas remain.
+
+    Returns True if the area was found and removed, False otherwise.
+    """
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute(
-        "DELETE FROM subscribers WHERE chat_id = ? AND area = ?",
-        (chat_id, area),
-    )
+    row = conn.execute(
+        "SELECT areas FROM subscribers WHERE chat_id = ?", (chat_id,)
+    ).fetchone()
+
+    if row is None:
+        conn.close()
+        return False
+
+    areas = json.loads(row[0])
+    if area not in areas:
+        conn.close()
+        return False
+
+    areas.remove(area)
+    if not areas:
+        conn.execute("DELETE FROM subscribers WHERE chat_id = ?", (chat_id,))
+    else:
+        conn.execute(
+            "UPDATE subscribers SET areas = ? WHERE chat_id = ?",
+            (json.dumps(areas), chat_id),
+        )
     conn.commit()
-    deleted = cursor.rowcount > 0
     conn.close()
-    return deleted
+    return True
 
 
 def get_subscriptions(chat_id: int) -> list[str]:
     """Return all subscribed area names for a chat."""
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute(
-        "SELECT area FROM subscribers WHERE chat_id = ? ORDER BY area", (chat_id,)
-    ).fetchall()
+    row = conn.execute(
+        "SELECT areas FROM subscribers WHERE chat_id = ?", (chat_id,)
+    ).fetchone()
     conn.close()
-    return [r[0] for r in rows]
+    return json.loads(row[0]) if row else []
 
 
-def get_all_subscribers():
+def get_all_subscribers() -> list[tuple[int, list[str]]]:
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT chat_id, area FROM subscribers").fetchall()
+    rows = conn.execute("SELECT chat_id, areas FROM subscribers").fetchall()
     conn.close()
-    return rows
+    return [(chat_id, json.loads(areas)) for chat_id, areas in rows]
 
 
-def update_subscriber_timestamps(chat_id: int, area: str, last_sent_at: str, next_scheduled_at: str):
+def update_subscriber_timestamps(chat_id: int, last_sent_at: str, next_scheduled_at: str):
     """Update the last_sent_at and next_scheduled_at timestamps for a subscriber."""
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
-        "UPDATE subscribers SET last_sent_at = ?, next_scheduled_at = ? WHERE chat_id = ? AND area = ?",
-        (last_sent_at, next_scheduled_at, chat_id, area),
+        "UPDATE subscribers SET last_sent_at = ?, next_scheduled_at = ? WHERE chat_id = ?",
+        (last_sent_at, next_scheduled_at, chat_id),
     )
     conn.commit()
     conn.close()
 
 
-def get_overdue_subscribers(now_iso: str) -> list[tuple[int, str]]:
+def get_overdue_subscribers(now_iso: str) -> list[tuple[int, list[str]]]:
     """Get subscribers whose next_scheduled_at is due (<= now)."""
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
-        "SELECT chat_id, area FROM subscribers WHERE next_scheduled_at IS NULL OR next_scheduled_at <= ?",
+        "SELECT chat_id, areas FROM subscribers WHERE next_scheduled_at IS NULL OR next_scheduled_at <= ?",
         (now_iso,),
     ).fetchall()
     conn.close()
-    return rows
+    return [(chat_id, json.loads(areas)) for chat_id, areas in rows]
 
 
 # ---------------------------------------------------------------------------
