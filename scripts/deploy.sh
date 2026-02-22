@@ -15,7 +15,8 @@ echo "Installing dependencies..."
 .venv/bin/pip install -r requirements.txt
 
 # Get the version tag being deployed (from main after pull)
-VERSION_TAG=$(git describe --tags main 2>/dev/null || echo "")
+# --abbrev=0 ensures we get just the tag name without commit distance suffix
+VERSION_TAG=$(git describe --tags --abbrev=0 main 2>/dev/null || echo "")
 
 # Abort deployment if no version tag is found
 if [ -z "$VERSION_TAG" ]; then
