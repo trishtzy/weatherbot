@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sqlite3
@@ -124,6 +125,9 @@ def init_db():
     
     conn.close()
     logger.info("Database initialization complete")
+
+
+SUBSCRIBER_LIMIT = 100
 
 
 def add_subscriber(chat_id: int, area: str) -> bool:
