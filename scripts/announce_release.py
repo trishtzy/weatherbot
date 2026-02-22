@@ -61,11 +61,12 @@ async def main(version: str, release_notes: str):
         print("No subscribers found, skipping announcement.")
         return
 
-    message = "*Scheduled maintenance in progress*\n\nThe bot will be briefly unavailable while a new release is deployed."
-    if release_notes:
-        message += f"\n\n*Changes in this release:*\n{release_notes}"
+    message = "*Deployment completed*"
     if version:
         message += f"\n\nVersion: {version}"
+    if release_notes:
+        message += f"\n\n*Changes:*\n{release_notes}"
+    message += "\n\nThe bot has been updated and is now running. All services are operational."
 
     print(f"Sending release announcement to {len(chat_ids)} subscriber(s)...")
     async with httpx.AsyncClient() as client:
