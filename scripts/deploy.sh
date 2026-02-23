@@ -4,9 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "Pulling latest changes..."
-PREV_HEAD=$(git rev-parse HEAD)
-git pull
-NEW_HEAD=$(git rev-parse HEAD)
+git pull --tags --force
 
 echo "Setting up virtual environment..."
 python3 -m venv .venv
