@@ -1,3 +1,5 @@
 .env
 *.db
 __pycache__/
+CCRS_Newsletters/
+MSS_Research_Letters/
