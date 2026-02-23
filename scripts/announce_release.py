@@ -61,9 +61,7 @@ async def main(version: str, release_notes: str):
         print("No subscribers found, skipping announcement.")
         return
 
-    message = f"@sgforecastbot has been updated to version *{version}*"
-    if release_notes:
-        message += f"\n\n*Changes:*\n{release_notes}"
+    message = build_message(version, release_notes)
 
     print(f"Sending release announcement to {len(chat_ids)} subscriber(s)...")
     async with httpx.AsyncClient() as client:
@@ -72,11 +70,31 @@ async def main(version: str, release_notes: str):
     print("Announcement sent.")
 
 
+def build_message(version: str, release_notes: str) -> str:
+    """Build the release announcement message."""
+    message = f"@sgforecastbot has been updated to version *{version}*"
+    if release_notes:
+        message += f"\n\n*Changes:*\n{release_notes}"
+    return message
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: announce_release.py <version> <release-notes>")
+        print("Usage: announce_release.py [--dry-run] <version> <release-notes>")
         sys.exit(1)
 
-    version = sys.argv[1]
-    release_notes = sys.argv[2] if len(sys.argv) > 2 else ""
+    dry_run = sys.argv[1] == "--dry-run"
+    args = sys.argv[2:] if dry_run else sys.argv[1:]
+
+    if not args:
+        print("Usage: announce_release.py [--dry-run] <version> <release-notes>")
+        sys.exit(1)
+
+    version = args[0]
+    release_notes = args[1] if len(args) > 1 else ""
+
+    if dry_run:
+        print(build_message(version, release_notes))
+        sys.exit(0)
+
     asyncio.run(main(version, release_notes))

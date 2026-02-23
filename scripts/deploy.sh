@@ -3,16 +3,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Parse arguments
+DRY_RUN=false
+if [[ "${1:-}" == "--dry-run" ]]; then
+    DRY_RUN=true
+fi
+
 echo "Pulling latest changes..."
-PREV_HEAD=$(git rev-parse HEAD)
-git pull
-NEW_HEAD=$(git rev-parse HEAD)
-
-echo "Setting up virtual environment..."
-python3 -m venv .venv
-
-echo "Installing dependencies..."
-.venv/bin/pip install -r requirements.txt
+git pull --tags --force
 
 # Get the version tag being deployed (from main after pull)
 # --abbrev=0 ensures we get just the tag name without commit distance suffix
@@ -34,6 +32,18 @@ else
     # No previous tag found (first release), show all commits in this tag
     RELEASE_NOTES=$(git log --pretty=format:"• %s" "${VERSION_TAG}")
 fi
+
+# Dry run: print release notes and exit
+if $DRY_RUN; then
+    python3 scripts/announce_release.py --dry-run "$VERSION_TAG" "$RELEASE_NOTES"
+    exit 0
+fi
+
+echo "Setting up virtual environment..."
+python3 -m venv .venv
+
+echo "Installing dependencies..."
+.venv/bin/pip install -r requirements.txt
 
 echo "Installing systemd service..."
 cp scripts/weatherbot.service /etc/systemd/system/weatherbot.service
