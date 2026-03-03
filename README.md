@@ -5,8 +5,8 @@ A Telegram bot that delivers 2-hourly weather forecasts for Singapore areas, pow
 ## Features
 
 - Subscribe to weather updates for any area in Singapore
-- Receive automatic forecasts every 2 hours
-- Check the current forecast on demand
+- Receive automatic forecasts every 2 hours with UV index
+- Check the current forecast on demand with UV index
 - Browse all available forecast areas
 
 ## Bot Commands
