@@ -27,6 +27,7 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 DGS_API_KEY = os.environ.get("DGS_API_KEY", "")
 
 WEATHER_API_URL = "https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast"
+UV_API_URL = "https://api-open.data.gov.sg/v2/real-time/api/uv"
 
 DB_PATH = "subscribers.db"
 
@@ -373,6 +374,10 @@ _forecast_cache: dict | None = None
 _forecast_cache_expiry: datetime | None = None
 _FORECAST_CACHE_TTL_SECONDS = 1800  # 30 minutes
 
+_uv_cache: dict | None = None
+_uv_cache_expiry: datetime | None = None
+_UV_CACHE_TTL_SECONDS = 1800  # 30 minutes
+
 
 async def fetch_forecast() -> dict | None:
     """Fetch the 2-hour forecast, returning a cached response if still fresh."""
@@ -397,6 +402,47 @@ async def fetch_forecast() -> dict | None:
     _forecast_cache = result
     _forecast_cache_expiry = datetime.now(timezone.utc) + timedelta(seconds=_FORECAST_CACHE_TTL_SECONDS) if result else None
     return _forecast_cache
+
+
+async def fetch_uv_index() -> dict | None:
+    """Fetch the UV index, returning a cached response if still fresh."""
+    global _uv_cache, _uv_cache_expiry
+    if _uv_cache and _uv_cache_expiry and datetime.now(timezone.utc) < _uv_cache_expiry:
+        return _uv_cache
+
+    headers = {}
+    if DGS_API_KEY:
+        headers["x-api-key"] = DGS_API_KEY
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(UV_API_URL, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+    if data.get("code") != 0:
+        logger.error("UV API error: %s", data.get("errorMsg"))
+        return None
+
+    result = data.get("data")
+    _uv_cache = result
+    _uv_cache_expiry = datetime.now(timezone.utc) + timedelta(seconds=_UV_CACHE_TTL_SECONDS) if result else None
+    return _uv_cache
+
+
+def get_current_uv_index(uv_data: dict | None) -> int | None:
+    """Extract the current UV index value from the API response."""
+    if not uv_data:
+        return None
+    records = uv_data.get("records", [])
+    if not records:
+        return None
+    latest = records[-1]
+    index_list = latest.get("index", [])
+    if not index_list:
+        return None
+    # Get the most recent UV index value (last item in reverse-chronological list)
+    latest_index = index_list[-1]
+    return latest_index.get("value")
 
 
 def find_area_forecast(data: dict, area: str) -> str | None:
@@ -492,14 +538,14 @@ def format_trivia_message(trivia: dict) -> str:
     return f"Trivia of the week:\n\n{escaped_text}\n\nSource: {trivia['source_url']}"
 
 
-def format_forecast_message(area: str, forecast: str, valid_period: str) -> str:
+def format_forecast_message(area: str, forecast: str, uv_index: int | None = None) -> str:
     emoji = FORECAST_EMOJI.get(forecast, "")
     lines = [
         f"{emoji} *{area}*",
-        f"Forecast: *{forecast}*",
+        f"2hr Forecast: *{forecast}*",
     ]
-    if valid_period:
-        lines.append(f"Valid: {valid_period}")
+    if uv_index is not None:
+        lines.append(f"Current UV Index: *{uv_index}*")
     return "\n".join(lines)
 
 
@@ -574,8 +620,10 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"You're already subscribed to *{matched_area}*.", parse_mode="Markdown")
         return
 
-    # Fetch current forecast for all subscribed areas (not just the newly added one)
+    # Fetch current forecast and UV index for all subscribed areas (not just the newly added one)
     data = await fetch_forecast()
+    uv_data = await fetch_uv_index()
+    uv_index = get_current_uv_index(uv_data)
     all_areas = get_subscriptions(update.effective_chat.id)
     reply = f"Subscribed to *{matched_area}*! You'll receive forecasts every 2 hours."
 
@@ -584,12 +632,11 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     next_scheduled = calculate_next_scheduled_time(now)
 
     if data:
-        valid_period = get_valid_period_text(data)
         forecasts = []
         for area in all_areas:
             forecast = find_area_forecast(data, area)
             if forecast:
-                forecasts.append(format_forecast_message(area, forecast, valid_period))
+                forecasts.append(format_forecast_message(area, forecast, uv_index))
         if forecasts:
             reply += "\n\nCurrent forecast:\n" + "\n\n".join(forecasts)
 
@@ -656,12 +703,13 @@ async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Sorry, could not fetch the forecast right now.")
         return
 
-    valid_period = get_valid_period_text(data)
+    uv_data = await fetch_uv_index()
+    uv_index = get_current_uv_index(uv_data)
     messages = []
     for area in areas:
         forecast = find_area_forecast(data, area)
         if forecast:
-            messages.append(format_forecast_message(area, forecast, valid_period))
+            messages.append(format_forecast_message(area, forecast, uv_index))
 
     if not messages:
         await update.message.reply_text("No forecast data available for your areas right now.")
@@ -757,39 +805,40 @@ async def send_scheduled_updates(app: Application, startup: bool = False):
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
     
-    # Get current forecast data
+    # Get current forecast and UV data
     data = await fetch_forecast()
+    uv_data = await fetch_uv_index()
+    uv_index = get_current_uv_index(uv_data)
     if data is None:
         if not startup:
             logger.warning("Scheduled update: could not fetch forecast")
         return
-    
+
     # Get validity period in UTC
     validity_start, validity_end = get_validity_timestamps(data)
     if not validity_start or not validity_end:
         logger.warning("Scheduled update: could not extract validity period")
         return
-    
+
     # On startup, only send if current forecast is still valid (not expired)
     if startup:
         if now >= datetime.fromisoformat(validity_end):
             logger.info("Startup: current forecast expired, waiting for next scheduled run")
             return
-    
+
     # Get subscribers who need an update
     subscribers = get_overdue_subscribers(now_iso)
     if not subscribers:
         return
-    
-    valid_period = get_valid_period_text(data)
+
     next_scheduled = calculate_next_scheduled_time(now)
-    
+
     for chat_id, areas in subscribers:
         messages = []
         for area in areas:
             forecast = find_area_forecast(data, area)
             if forecast:
-                messages.append(format_forecast_message(area, forecast, valid_period))
+                messages.append(format_forecast_message(area, forecast, uv_index))
 
         if not messages:
             continue
