@@ -35,7 +35,7 @@ fi
 
 # Dry run: print release notes and exit
 if $DRY_RUN; then
-    python3 scripts/announce_release.py --dry-run "$VERSION_TAG" "$RELEASE_NOTES"
+    .venv/bin/python3 scripts/announce_release.py --dry-run "$VERSION_TAG" "$RELEASE_NOTES"
     exit 0
 fi
 
