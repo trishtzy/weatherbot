@@ -1,4 +1,6 @@
 .env
+.envrc
+.direnv/
 *.db
 __pycache__/
 CCRS_Newsletters/
