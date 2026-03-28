@@ -372,11 +372,11 @@ def get_trivia_enabled_subscribers() -> list[tuple[int, int | None]]:
 
 _forecast_cache: dict | None = None
 _forecast_cache_expiry: datetime | None = None
-_FORECAST_CACHE_TTL_SECONDS = 1800  # 30 minutes
+_FORECAST_CACHE_TTL_SECONDS = 60  # 1 minute
 
 _uv_cache: dict | None = None
 _uv_cache_expiry: datetime | None = None
-_UV_CACHE_TTL_SECONDS = 1800  # 30 minutes
+_UV_CACHE_TTL_SECONDS = 60  # 1 minute
 
 
 async def fetch_forecast() -> dict | None:
