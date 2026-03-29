@@ -436,12 +436,12 @@ def get_current_uv_index(uv_data: dict | None) -> int | None:
     records = uv_data.get("records", [])
     if not records:
         return None
-    latest = records[-1]
+    latest = records[0]
     index_list = latest.get("index", [])
     if not index_list:
         return None
-    # Get the most recent UV index value (last item in reverse-chronological list)
-    latest_index = index_list[-1]
+    # Get the most recent UV index value (first item in reverse-chronological list)
+    latest_index = index_list[0]
     return latest_index.get("value")
 
 
