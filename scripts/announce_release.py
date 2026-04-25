@@ -51,7 +51,7 @@ async def send_announcement(chat_id: int, message: str, client: httpx.AsyncClien
         print(f"  Failed to send to chat_id={chat_id}: {e}")
 
 
-async def main(version: str, release_notes: str):
+async def main(message: str):
     if not TELEGRAM_BOT_TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN not set.")
         sys.exit(1)
@@ -61,9 +61,7 @@ async def main(version: str, release_notes: str):
         print("No subscribers found, skipping announcement.")
         return
 
-    message = build_message(version, release_notes)
-
-    print(f"Sending release announcement to {len(chat_ids)} subscriber(s)...")
+    print(f"Sending announcement to {len(chat_ids)} subscriber(s)...")
     async with httpx.AsyncClient() as client:
         tasks = [send_announcement(chat_id, message, client) for chat_id in chat_ids]
         await asyncio.gather(*tasks)
@@ -80,21 +78,26 @@ def build_message(version: str, release_notes: str) -> str:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: announce_release.py [--dry-run] <version> <release-notes>")
+        print("Usage: announce_release.py [--dry-run] [--raw <message>] <version> [release-notes]")
         sys.exit(1)
 
-    dry_run = sys.argv[1] == "--dry-run"
-    args = sys.argv[2:] if dry_run else sys.argv[1:]
+    dry_run = "--dry-run" in sys.argv
+    raw = "--raw" in sys.argv
+    args = [a for a in sys.argv[1:] if a not in ("--dry-run", "--raw")]
 
     if not args:
-        print("Usage: announce_release.py [--dry-run] <version> <release-notes>")
+        print("Usage: announce_release.py [--dry-run] [--raw <message>] <version> [release-notes]")
         sys.exit(1)
 
-    version = args[0]
-    release_notes = args[1] if len(args) > 1 else ""
+    if raw:
+        message = args[0]
+    else:
+        version = args[0]
+        release_notes = args[1] if len(args) > 1 else ""
+        message = build_message(version, release_notes)
 
     if dry_run:
-        print(build_message(version, release_notes))
+        print(message)
         sys.exit(0)
 
-    asyncio.run(main(version, release_notes))
+    asyncio.run(main(message))
